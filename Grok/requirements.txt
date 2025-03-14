@@ -1,0 +1,8 @@
+pandas
+streamlit
+xgboost
+scikit-learn
+matplotlib
+requests
+python-dotenv
+groq
