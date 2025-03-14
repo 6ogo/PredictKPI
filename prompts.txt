@@ -1,0 +1,50 @@
+Delivery Level Data
+
+File name: delivery_data.csv
+
+- InternalName (Delivery identifier)
+- Subject (Email subject line)
+- Date (Date and time of delivery)
+- Sendouts (Total sendout count for delivery)
+- Opens (Total Opens count in delivery)
+- Clicks (Total Clicks count in delivery)
+- Optouts (Total unsubscribe count in delivery)
+- Dialog, Syfte, Produkt (Campaign metadata)
+
+Example:
+InternalName;Date;Sendouts;Opens;Clicks;Optouts;Dialog;Syfte;Product;Subject
+DM123456;2024/06/10 15:59;14827;2559;211;9;F;VD;Mo;Take the car to your next adventure
+
+Customer Level Data
+
+File name: customer_data.csv
+- Primary key (Customer identifier)
+- InternalName (Delivery identifier to link with delivery data)
+- OptOut (OptOut in delivery 1/0)
+- Open (Opened delivery 1/0)
+- Click (Clicked in delivery 1/0)
+- Gender (Customer gender)
+- Age (Customer age)
+- Bolag (Customer company connection)
+
+Example:
+Primary key;OptOut;Open;Click;Gender;Age;InternalName;Bolag
+12345678;0;1;0;Kvinna;69;DM123456;Stockholm
+
+I want to build a streamlit app with these requirements:
+
+-Aggregate the .csv files on internalname
+-Calculate the Openrate, Clickrate and Optoutrate from Opens, Clicks and Optouts (They all end with s and come from delivery_data.csv) these are the total number of Opens, Clicks and Optouts for each InternalName
+-XGBoost model-fit from files and results in a tab.
+ 
+Fields for users to choose their new sendout parameters:
+Dialog, Syfte, Produkt, Agespan (Min 18, Max 100), which bolag to EXCLUDE with checkboxes and their Subjectline - To see the KPI they need to set for the sendout.
+
+Here I want to implement groq API;
+Subjectline recommendations and tips, and their calculated openrates - give multiple suggestions and do A/B/C/D testing. A is always the user-input and the B/C/D tests are AI generated tips that "test them" on the users. Subjectlines are only prone to change the openrate. I want to send a good prompt to get the recommendations for the tests and calculations, package the subjetline and its' result, no other information and fetch it in a good way.
+
+Good information for context
+-There could be duplicates of PrimaryKeys or InternalName in Customer_data.csv, this is because a primarykey (user) can have recieved multiple sendouts (InternalNames). And a sendout (InternalName) include all the users (PrimaryKeys) that recieved the sendout.
+-The CSV files are UTF-8 and semicolon ";" seperated.
+
+Send me the entire code.
