@@ -176,3 +176,5 @@ Data/customer_data.csv
 Data/delivery_data.csv
 Grok/xgboost_model.pkl
 *.pkl
+/Grok/Docs
+Grok/models/xgboost_model_v2.0.0_metadata.yaml
