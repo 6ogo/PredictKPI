@@ -1,10 +1,9 @@
 import pandas as pd
 import streamlit as st
 from xgboost import XGBRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split, KFold
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
-from sklearn.metrics import r2_score
 import numpy as np
 import requests
 import json
@@ -42,15 +41,24 @@ customer_data_with_dummies = pd.concat([customer_data, bolag_dummies], axis=1)
 bolag_features = customer_data_with_dummies.groupby('InternalName')[bolag_dummies.columns].max().reset_index()
 delivery_data = delivery_data.merge(bolag_features, on='InternalName', how='left')
 
-# Extract subject line features
+# **Extract subject line and preheader features**
 delivery_data['Subject_length'] = delivery_data['Subject'].str.len()
-delivery_data['Num_words'] = delivery_data['Subject'].str.split().str.len()
-delivery_data['Has_exclamation'] = delivery_data['Subject'].str.contains('!').astype(int)
-delivery_data['Has_question'] = delivery_data['Subject'].str.contains(r'\?', regex=True).astype(int)
+delivery_data['Subject_num_words'] = delivery_data['Subject'].str.split().str.len()
+delivery_data['Subject_has_exclamation'] = delivery_data['Subject'].str.contains('!').astype(int)
+delivery_data['Subject_has_question'] = delivery_data['Subject'].str.contains(r'\?', regex=True).astype(int)
+
+delivery_data['Preheader_length'] = delivery_data['Preheader'].str.len()
+delivery_data['Preheader_num_words'] = delivery_data['Preheader'].str.split().str.len()
+delivery_data['Preheader_has_exclamation'] = delivery_data['Preheader'].str.contains('!').astype(int)
+delivery_data['Preheader_has_question'] = delivery_data['Preheader'].str.contains(r'\?', regex=True).astype(int)
 
 # Define feature columns
 categorical_features = ['Dialog', 'Syfte', 'Product']
-numerical_features = ['Min_age', 'Max_age', 'Subject_length', 'Num_words', 'Has_exclamation', 'Has_question']
+numerical_features = [
+    'Min_age', 'Max_age', 
+    'Subject_length', 'Subject_num_words', 'Subject_has_exclamation', 'Subject_has_question',
+    'Preheader_length', 'Preheader_num_words', 'Preheader_has_exclamation', 'Preheader_has_question'
+]
 bolag_features_list = [col for col in delivery_data.columns if col.startswith('Bolag_')]
 
 # Prepare features and target
@@ -66,35 +74,66 @@ dummy_df = pd.get_dummies(delivery_data[categorical_features])
 print("Dummy columns:", dummy_df.columns.tolist())
 
 # Explicitly store the mapping from actual data to dummies columns
-dummy_dialog_map = {}
-for dialog in delivery_data['Dialog'].unique():
-    dummy_dialog_map[dialog] = f'Dialog_{dialog}'
-
-dummy_syfte_map = {}
-for syfte in delivery_data['Syfte'].unique():
-    dummy_syfte_map[syfte] = f'Syfte_{syfte}'
-    
-dummy_product_map = {}
-for product in delivery_data['Product'].unique():
-    dummy_product_map[product] = f'Product_{product}'
+dummy_dialog_map = {dialog: f'Dialog_{dialog}' for dialog in delivery_data['Dialog'].unique()}
+dummy_syfte_map = {syfte: f'Syfte_{syfte}' for syfte in delivery_data['Syfte'].unique()}
+dummy_product_map = {product: f'Product_{product}' for product in delivery_data['Product'].unique()}
 
 print("Dialog mapping:", dummy_dialog_map)
 print("Syfte mapping:", dummy_syfte_map)
 print("Product mapping:", dummy_product_map)
 
-# Load or train XGBoost model
+# **Split data into training and test sets (moved outside conditional)**
+X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
+
+# **Define sample weights**
+THRESHOLD = 0.5
+WEIGHT_HIGH = 2.0
+WEIGHT_LOW = 1.0
+sample_weights_train = np.where(y_train > THRESHOLD, WEIGHT_HIGH, WEIGHT_LOW)
+
+# Load or train XGBoost model with regularization and sample weights
 model_file = 'xgboost_model.pkl'
 if os.path.exists(model_file):
     model = joblib.load(model_file)
-    # Initialize mse with a default value since we're loading a pre-trained model
-    mse = 0.0
+    mse = 0.0  # Default value since we're loading a pre-trained model
+    st.write("Loaded existing model from", model_file)
 else:
-    X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
-    model = XGBRegressor()
-    model.fit(X_train, y_train)
+    # Initialize model with L2 regularization
+    model = XGBRegressor(reg_lambda=1.0, random_state=42)
+    # Train with sample weights
+    model.fit(X_train, y_train, sample_weight=sample_weights_train)
     joblib.dump(model, model_file)
     y_pred = model.predict(X_test)
     mse = mean_squared_error(y_test, y_pred)
+    st.write("Trained and saved new model to", model_file)
+
+# **Cross-Validation on Training Set**
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+cv_mse_scores = []
+cv_rmse_scores = []
+cv_mae_scores = []
+cv_r2_scores = []
+
+for train_idx, val_idx in kf.split(X_train):
+    X_train_fold, X_val_fold = X_train.iloc[train_idx], X_train.iloc[val_idx]
+    y_train_fold, y_val_fold = y_train.iloc[train_idx], y_train.iloc[val_idx]
+    sample_weights_fold = np.where(y_train_fold > THRESHOLD, WEIGHT_HIGH, WEIGHT_LOW)
+    model_cv = XGBRegressor(reg_lambda=1.0, random_state=42)
+    model_cv.fit(X_train_fold, y_train_fold, sample_weight=sample_weights_fold)
+    y_pred_val = model_cv.predict(X_val_fold)
+    mse_cv = mean_squared_error(y_val_fold, y_pred_val)
+    rmse_cv = np.sqrt(mse_cv)
+    mae_cv = mean_absolute_error(y_val_fold, y_pred_val)
+    r2_cv = r2_score(y_val_fold, y_pred_val)
+    cv_mse_scores.append(mse_cv)
+    cv_rmse_scores.append(rmse_cv)
+    cv_mae_scores.append(mae_cv)
+    cv_r2_scores.append(r2_cv)
+
+avg_cv_mse = np.mean(cv_mse_scores)
+avg_cv_rmse = np.mean(cv_rmse_scores)
+avg_cv_mae = np.mean(cv_mae_scores)
+avg_cv_r2 = np.mean(cv_r2_scores)
 
 # --- Define Enums ---
 BOLAG_VALUES = {
@@ -174,19 +213,13 @@ available_syfte = delivery_data['Syfte'].unique().tolist()
 available_dialog = delivery_data['Dialog'].unique().tolist()
 available_produkt = delivery_data['Product'].unique().tolist()
 
-# Debug prints to see what's available
 print("Available Bolag:", available_bolag)
 print("Available Syfte:", available_syfte)
 print("Available Dialog:", available_dialog)
 print("Available Product:", available_produkt)
 
 # Check bolag mapping
-bolag_options = []
-for b in available_bolag:
-    for key, value in BOLAG_VALUES.items():
-        if value == b:
-            bolag_options.append(key)
-            break
+bolag_options = [key for key, value in BOLAG_VALUES.items() if value in available_bolag]
 
 # --- Streamlit App ---
 st.title('Sendout KPI Predictor')
@@ -198,40 +231,54 @@ tab1, tab2 = st.tabs(['Sendout Prediction', 'Model Results'])
 with tab2:
     st.header('Model Performance')
     
-    # Check if the model was loaded or trained
     if os.path.exists(model_file):
         st.info("Model was loaded from saved file. Let's verify its performance on the dataset.")
         
-        # Evaluate model on the whole dataset to verify performance
         X_verify = features
         y_verify = target
         y_pred = model.predict(X_verify)
         
-        # Calculate metrics
         mse = mean_squared_error(y_verify, y_pred)
         mae = np.mean(np.abs(y_verify - y_pred))
         rmse = np.sqrt(mse)
         r2 = r2_score(y_verify, y_pred)
         
-        # Display metrics
+        # **Add Cross-Validation and Test Set Results**
+        st.subheader("Cross-Validation Performance (5-fold on Training Set)")
+        col1, col2 = st.columns(2)
+        col1.metric("Average Mean Squared Error", f"{avg_cv_mse:.6f}")
+        col1.metric("Average Root MSE", f"{avg_cv_rmse:.6f}")
+        col2.metric("Average Mean Absolute Error", f"{avg_cv_mae:.6f}")
+        col2.metric("Average R² Score", f"{avg_cv_r2:.4f}")
+        
+        st.subheader("Test Set Performance")
+        y_pred_test = model.predict(X_test)
+        mse_test = mean_squared_error(y_test, y_pred_test)
+        rmse_test = np.sqrt(mse_test)
+        mae_test = mean_absolute_error(y_test, y_pred_test)
+        r2_test = r2_score(y_test, y_pred_test)
+        col1, col2 = st.columns(2)
+        col1.metric("Mean Squared Error", f"{mse_test:.6f}")
+        col1.metric("Root MSE", f"{rmse_test:.6f}")
+        col2.metric("Mean Absolute Error", f"{mae_test:.6f}")
+        col2.metric("R² Score", f"{r2_test:.4f}")
+        
+        st.subheader("Full Dataset Verification")
         col1, col2 = st.columns(2)
         col1.metric("Mean Squared Error", f"{mse:.6f}")
         col1.metric("Root MSE", f"{rmse:.6f}")
         col2.metric("Mean Absolute Error", f"{mae:.6f}")
         col2.metric("R² Score", f"{r2:.4f}")
         
-        # Display feature importances
         st.subheader("Feature Importances")
         importances = model.feature_importances_
         feature_names = features.columns
         
-        # Create DataFrame for better display
         importance_df = pd.DataFrame({
             'Feature': feature_names,
             'Importance': importances
         }).sort_values('Importance', ascending=False)
         
-        # Show top 15 features in a bar chart
         top_features = importance_df.head(15)
         fig, ax = plt.subplots(figsize=(10, 8))
         ax.barh(top_features['Feature'], top_features['Importance'])
@@ -240,40 +287,33 @@ with tab2:
         plt.tight_layout()
         st.pyplot(fig)
         
-        # Display the full feature importance table
         st.subheader("All Feature Importances")
         st.dataframe(importance_df)
         
-        # Check data size
         st.subheader("Dataset Information")
         st.write(f"Number of samples: {X_verify.shape[0]}")
         st.write(f"Number of features: {X_verify.shape[1]}")
         
-        # Compare predictions vs actual values
-        st.subheader("Predictions vs Actual Values")
-        
-        # Create a scatter plot
+        st.subheader("Predictions vs Actual Values (Test Set)")
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.scatter(y_verify, y_pred, alpha=0.5)
-        ax.plot([min(y_verify), max(y_verify)], [min(y_verify), max(y_verify)], 'r--')
+        ax.scatter(y_test, y_pred_test, alpha=0.5)
+        ax.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], 'r--')
         ax.set_xlabel('Actual Open Rate')
         ax.set_ylabel('Predicted Open Rate')
-        ax.set_title('Actual vs Predicted Open Rates')
+        ax.set_title('Actual vs Predicted Open Rates (Test Set)')
         plt.tight_layout()
         st.pyplot(fig)
         
-        # Distribution of prediction errors
-        errors = y_verify - y_pred
+        st.subheader("Distribution of Prediction Errors (Test Set)")
+        errors = y_test - y_pred_test
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.hist(errors, bins=50)
         ax.set_xlabel('Prediction Error')
         ax.set_ylabel('Frequency')
-        ax.set_title('Distribution of Prediction Errors')
+        ax.set_title('Distribution of Prediction Errors (Test Set)')
         plt.tight_layout()
         st.pyplot(fig)
-        
     else:
-        # For newly trained model
         X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
         st.write(f'Training set size: {X_train.shape[0]} samples')
         st.write(f'Test set size: {X_test.shape[0]} samples')
@@ -282,10 +322,17 @@ with tab2:
         st.write(f'Mean Absolute Error: {np.mean(np.abs(y_test - model.predict(X_test))):.6f}')
         st.write(f'R² Score: {r2_score(y_test, model.predict(X_test)):.4f}')
         
+        # **Add Cross-Validation Results**
+        st.subheader("Cross-Validation Performance (5-fold on Training Set)")
+        col1, col2 = st.columns(2)
+        col1.metric("Average Mean Squared Error", f"{avg_cv_mse:.6f}")
+        col1.metric("Average Root MSE", f"{avg_cv_rmse:.6f}")
+        col2.metric("Average Mean Absolute Error", f"{avg_cv_mae:.6f}")
+        col2.metric("Average R² Score", f"{avg_cv_r2:.4f}")
+        
         importances = model.feature_importances_
         feature_names = features.columns
         
-        # Show top 15 features
         importance_df = pd.DataFrame({
             'Feature': feature_names,
             'Importance': importances
@@ -299,87 +346,27 @@ with tab2:
         plt.tight_layout()
         st.pyplot(fig)
         
-        # Display full feature importance table
         st.dataframe(importance_df)
 
 # Tab 1: Sendout Prediction
 with tab1:
     st.header('Predict KPIs for New Sendout')
 
-    # Show available dialogs directly from the data, not from the DIALOG_VALUES mapping
     dialog_options = sorted(delivery_data['Dialog'].unique().tolist())
-    dialog_labels = []
-    for d in dialog_options:
-        # Try to find a friendly name in DIALOG_VALUES, otherwise use the code
-        found = False
-        for key, value in DIALOG_VALUES.items():
-            if value[0] == d:
-                dialog_labels.append((d, value[1]))
-                found = True
-                break
-        if not found:
-            dialog_labels.append((d, d))  # Use the code as the label
-            
-    selected_dialog = st.selectbox(
-        'Dialog', 
-        options=[label for _, label in dialog_labels],
-        format_func=lambda x: x
-    )
-    # Map the selected display name back to the code
-    for code, label in dialog_labels:
-        if label == selected_dialog:
-            selected_dialog_code = code
-            break
+    dialog_labels = [(d, next((value[1] for key, value in DIALOG_VALUES.items() if value[0] == d), d)) for d in dialog_options]
+    selected_dialog = st.selectbox('Dialog', options=[label for _, label in dialog_labels], format_func=lambda x: x)
+    selected_dialog_code = next(code for code, label in dialog_labels if label == selected_dialog)
     
-    # Same for Syfte
     syfte_options = sorted(delivery_data['Syfte'].unique().tolist())
-    syfte_labels = []
-    for s in syfte_options:
-        found = False
-        for key, value in SYFTE_VALUES.items():
-            if value[0] == s:
-                syfte_labels.append((s, value[1]))
-                found = True
-                break
-        if not found:
-            syfte_labels.append((s, s))
-            
-    selected_syfte = st.selectbox(
-        'Syfte', 
-        options=[label for _, label in syfte_labels],
-        format_func=lambda x: x
-    )
-    # Map back to code
-    for code, label in syfte_labels:
-        if label == selected_syfte:
-            selected_syfte_code = code
-            break
+    syfte_labels = [(s, next((value[1] for key, value in SYFTE_VALUES.items() if value[0] == s), s)) for s in syfte_options]
+    selected_syfte = st.selectbox('Syfte', options=[label for _, label in syfte_labels], format_func=lambda x: x)
+    selected_syfte_code = next(code for code, label in syfte_labels if label == selected_syfte)
     
-    # Same for Product
     product_options = sorted(delivery_data['Product'].unique().tolist())
-    product_labels = []
-    for p in product_options:
-        found = False
-        for key, value in PRODUKT_VALUES.items():
-            if value[0] == p:
-                product_labels.append((p, value[1]))
-                found = True
-                break
-        if not found:
-            product_labels.append((p, p))
-            
-    selected_product = st.selectbox(
-        'Product', 
-        options=[label for _, label in product_labels],
-        format_func=lambda x: x
-    )
-    # Map back to code
-    for code, label in product_labels:
-        if label == selected_product:
-            selected_product_code = code
-            break
+    product_labels = [(p, next((value[1] for key, value in PRODUKT_VALUES.items() if value[0] == p), p)) for p in product_options]
+    selected_product = st.selectbox('Product', options=[label for _, label in product_labels], format_func=lambda x: x)
+    selected_product_code = next(code for code, label in product_labels if label == selected_product)
     
-    # For Bolag, directly use the actual values from data, not through a mapping
     bolag_options = sorted(customer_data['Bolag'].unique().tolist())
     excluded_bolag_display = st.multiselect('Exclude Bolag', bolag_options)
     included_bolag = [b for b in bolag_options if b not in excluded_bolag_display]
@@ -387,34 +374,33 @@ with tab1:
     min_age = st.number_input('Min Age', min_value=18, max_value=100, value=18)
     max_age = st.number_input('Max Age', min_value=18, max_value=100, value=100)
     
-    # Subject line input with GenAI checkbox
+    # **Subject line and Preheader input with GenAI checkbox**
     col1, col2 = st.columns([3, 1])
     with col1:
         subject_line = st.text_input('Subject Line')
+        preheader = st.text_input('Preheader')
     with col2:
         use_genai = st.checkbox('GenAI', value=False)
 
     # Prediction logic
-    if subject_line:
+    if subject_line and preheader:
         # Create base input data
         base_input_data = pd.DataFrame(columns=features.columns)
         base_input_data.loc[0] = 0
 
-        # Data validation - use the correct column names from dummy_df
         dialog_col = dummy_dialog_map.get(selected_dialog_code, f'Dialog_{selected_dialog_code}')
         syfte_col = dummy_syfte_map.get(selected_syfte_code, f'Syfte_{selected_syfte_code}')
         product_col = dummy_product_map.get(selected_product_code, f'Product_{selected_product_code}')
         
-        # Check if columns exist
         if dialog_col not in features.columns:
             st.error(f"Selected Dialog '{selected_dialog_code}' maps to column '{dialog_col}' which is not found in features.")
-            st.write(f"Available columns that start with 'Dialog_': {[c for c in features.columns if c.startswith('Dialog_')]}")
+            st.write(f"Available columns: {[c for c in features.columns if c.startswith('Dialog_')]}")
         elif syfte_col not in features.columns:
             st.error(f"Selected Syfte '{selected_syfte_code}' maps to column '{syfte_col}' which is not found in features.")
-            st.write(f"Available columns that start with 'Syfte_': {[c for c in features.columns if c.startswith('Syfte_')]}")
+            st.write(f"Available columns: {[c for c in features.columns if c.startswith('Syfte_')]}")
         elif product_col not in features.columns:
             st.error(f"Selected Product '{selected_product_code}' maps to column '{product_col}' which is not found in features.")
-            st.write(f"Available columns that start with 'Product_': {[c for c in features.columns if c.startswith('Product_')]}")
+            st.write(f"Available columns: {[c for c in features.columns if c.startswith('Product_')]}")
         else:
             base_input_data[dialog_col] = 1
             base_input_data[syfte_col] = 1
@@ -426,32 +412,36 @@ with tab1:
                 if bolag_col in base_input_data.columns:
                     base_input_data[bolag_col] = 1
 
-            # Function to predict open rate
-            def predict_for_subject(subject_line):
+            # **Updated prediction function for Subject and Preheader**
+            def predict_for_subject_and_preheader(subject_line, preheader):
                 input_data = base_input_data.copy()
                 input_data['Subject_length'] = len(subject_line)
-                input_data['Num_words'] = len(subject_line.split())
-                input_data['Has_exclamation'] = 1 if '!' in subject_line else 0
-                input_data['Has_question'] = 1 if '?' in subject_line else 0
+                input_data['Subject_num_words'] = len(subject_line.split())
+                input_data['Subject_has_exclamation'] = 1 if '!' in subject_line else 0
+                input_data['Subject_has_question'] = 1 if '?' in subject_line else 0
+                input_data['Preheader_length'] = len(preheader)
+                input_data['Preheader_num_words'] = len(preheader.split())
+                input_data['Preheader_has_exclamation'] = 1 if '!' in preheader else 0
+                input_data['Preheader_has_question'] = 1 if '?' in preheader else 0
                 return model.predict(input_data)[0]
 
-            # Calculate KPIs for current subject line
-            openrate_A = predict_for_subject(subject_line)
+            # Calculate KPIs for current subject line and preheader
+            openrate_A = predict_for_subject_and_preheader(subject_line, preheader)
             avg_clickrate = delivery_data['Clickrate'].mean()
             avg_optoutrate = delivery_data['Optoutrate'].mean()
 
-            # Display predicted results for current subject line
+            # Display predicted results for current subject line and preheader
             st.subheader('Predicted Results')
             col1, col2, col3 = st.columns(3)
             col1.metric("Open Rate", f"{openrate_A:.2%}")
             col2.metric("Click Rate", f"{avg_clickrate:.2%}")
             col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
 
-            # A/B/C/D Testing
+            # **A/B/C/D Testing with Groq API including Preheader**
             if use_genai and GROQ_API_KEY:
-                # Create data to send to Groq
                 groq_data = {
                     "subject": subject_line,
+                    "preheader": preheader,
                     "metrics": {
                         "openrate": float(openrate_A),
                         "clickrate": avg_clickrate,
@@ -466,16 +456,15 @@ with tab1:
                     "bolag": included_bolag
                 }
                 
-                # Button to send to Groq API
                 if st.button('Send to Groq API'):
                     st.session_state.groq_sending = True
                     st.info("Sending data to Groq API...")
                     
-                    # Call Groq API
                     prompt = f"""
-                    I need to create email subject lines for a marketing campaign. 
+                    I need to create email subject lines and preheaders for a marketing campaign. 
                     
                     Current subject line: "{subject_line}"
+                    Current preheader: "{preheader}"
                     Predicted open rate: {openrate_A:.2%}
                     
                     Campaign details:
@@ -485,19 +474,18 @@ with tab1:
                     - Age range: {min_age} to {max_age}
                     - Target regions: {', '.join(included_bolag)}
                     
-                    Please generate THREE alternative email subject lines in Swedish that could improve the open rate.
-                    Return your response as a JSON object with a 'subject_lines' field containing an array of objects, each with a 'subject' field, like this:
+                    Please generate THREE alternative email subject lines and preheaders in Swedish that could improve the open rate.
+                    Return your response as a JSON object with a 'suggestions' field containing an array of objects, each with 'subject' and 'preheader' fields, like this:
                     {{
-                        "subject_lines": [
-                            {{"subject": "First alternative subject line"}},
-                            {{"subject": "Second alternative subject line"}},
-                            {{"subject": "Third alternative subject line"}}
+                        "suggestions": [
+                            {{"subject": "First alternative subject line", "preheader": "First alternative preheader"}},
+                            {{"subject": "Second alternative subject line", "preheader": "Second alternative preheader"}},
+                            {{"subject": "Third alternative subject line", "preheader": "Third alternative preheader"}}
                         ]
                     }}
                     """
                     
                     try:
-                        # Make the API call here to get the response
                         response = requests.post(
                             'https://api.groq.com/openai/v1/chat/completions',
                             headers={
@@ -507,7 +495,7 @@ with tab1:
                             json={
                                 "model": "llama3-70b-8192",
                                 "messages": [
-                                    {"role": "system", "content": "You are an expert in email marketing optimization. Your task is to generate compelling email subject lines in Swedish that maximize open rates."},
+                                    {"role": "system", "content": "You are an expert in email marketing optimization. Your task is to generate compelling email subject lines and preheaders in Swedish that maximize open rates."},
                                     {"role": "user", "content": prompt}
                                 ],
                                 "temperature": 0.7,
@@ -516,123 +504,48 @@ with tab1:
                             verify=False
                         )
                         
-                        # Now process the response
                         if response.status_code == 200:
-                            try:
-                                response_data = response.json()
-                                content = response_data.get('choices', [{}])[0].get('message', {}).get('content', '{}')
-                                print("Raw response content:", content)  # Debug print
-                                
-                                suggestions_data = json.loads(content)
-                                print("Parsed suggestions data:", suggestions_data)  # Debug print
-                                
-                                # Extract suggestions correctly based on the response structure
-                                if 'subject_lines' in suggestions_data:
-                                    suggestions = suggestions_data['subject_lines']
-                                elif isinstance(suggestions_data, list):
-                                    suggestions = suggestions_data
-                                else:
-                                    # Fallback options if structure is unexpected
-                                    st.warning("Unexpected response format. Falling back to simple alternatives.")
-                                    suggestions = [
-                                        {'subject': f"{subject_line}!"},
-                                        {'subject': subject_line.title()},
-                                        {'subject': ' '.join(subject_line.split()[:5])}
-                                    ]
-                                
-                                print("Processed suggestions:", suggestions)  # Debug print
-                                
-                                # Process the suggestions for A/B/C/D testing
-                                options = []
-                                for i, sug in enumerate(suggestions[:3], start=1):
-                                    subject = sug.get('subject', '')
-                                    if subject:
-                                        openrate = predict_for_subject(subject)
-                                        options.append((chr(65 + i), subject, openrate))
-                                
-                                # Display alternative options with KPIs
-                                st.subheader("Alternative Subject Lines")
-                                
-                                for opt, subject, openrate in options:
-                                    st.write(f'**{opt}: "{subject}"** - Predicted Results:')
-                                    col1, col2, col3 = st.columns(3)
-                                    col1.metric("Open Rate", f"{openrate:.2%}", f"{openrate - openrate_A:.2%}")
-                                    col2.metric("Click Rate", f"{avg_clickrate:.2%}")
-                                    col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
-                                
-                                # Determine best option
-                                all_options = [('Current', subject_line, openrate_A)] + options
-                                best_option = max(all_options, key=lambda x: x[2])
-                                
-                                st.subheader("Best Option")
-                                if best_option[0] == 'Current':
-                                    st.write(f'**Current subject line: "{best_option[1]}"**')
-                                else:
-                                    st.write(f'**{best_option[0]}: "{best_option[1]}"**')
-                                
+                            response_data = response.json()
+                            content = response_data.get('choices', [{}])[0].get('message', {}).get('content', '{}')
+                            suggestions_data = json.loads(content)
+                            
+                            suggestions = suggestions_data.get('suggestions', [])
+                            
+                            options = []
+                            for i, sug in enumerate(suggestions[:3], start=1):
+                                subject = sug.get('subject', '')
+                                preheader = sug.get('preheader', '')
+                                if subject and preheader:
+                                    openrate = predict_for_subject_and_preheader(subject, preheader)
+                                    options.append((chr(65 + i), subject, preheader, openrate))
+                            
+                            st.subheader("Alternative Subject Lines and Preheaders")
+                            for opt, subject, preheader, openrate in options:
+                                st.write(f'**{opt}: Subject: "{subject}", Preheader: "{preheader}"** - Predicted Results:')
                                 col1, col2, col3 = st.columns(3)
-                                col1.metric("Open Rate", f"{best_option[2]:.2%}", f"{best_option[2] - openrate_A:.2%}" if best_option[0] != 'Current' else None)
+                                col1.metric("Open Rate", f"{openrate:.2%}", f"{openrate - openrate_A:.2%}")
                                 col2.metric("Click Rate", f"{avg_clickrate:.2%}")
                                 col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
-                                
-                            except json.JSONDecodeError as e:
-                                st.error(f'Failed to parse JSON response: {str(e)}')
-                                st.code(response.text)  # Show the raw response for debugging
+                            
+                            all_options = [('Current', subject_line, preheader, openrate_A)] + options
+                            best_option = max(all_options, key=lambda x: x[3])
+                            
+                            st.subheader("Best Option")
+                            if best_option[0] == 'Current':
+                                st.write(f'**Current: Subject: "{best_option[1]}", Preheader: "{best_option[2]}"**')
+                            else:
+                                st.write(f'**{best_option[0]}: Subject: "{best_option[1]}", Preheader: "{best_option[2]}"**')
+                            
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("Open Rate", f"{best_option[3]:.2%}", f"{best_option[3] - openrate_A:.2%}" if best_option[0] != 'Current' else None)
+                            col2.metric("Click Rate", f"{avg_clickrate:.2%}")
+                            col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
                         else:
                             st.error(f'API error: {response.status_code}')
                             st.code(response.text)
                     except Exception as e:
                         st.error(f"An error occurred: {str(e)}")
-                        # Show stack trace for detailed debugging
                         import traceback
                         st.code(traceback.format_exc())
-                        
             elif use_genai and not GROQ_API_KEY:
                 st.warning('Groq API key not found. Please set GROQ_API_KEY in .env file.')
-            else:
-                # Manual A/B/C/D testing without GenAI
-                st.subheader('Alternative Subject Lines')
-                
-                # Generate simple alternatives without mentioning the original as option A
-                subject_B = subject_line + '!'
-                openrate_B = predict_for_subject(subject_B)
-                st.write(f'**B: "{subject_B}"** - Predicted Results:')
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Open Rate", f"{openrate_B:.2%}", f"{openrate_B - openrate_A:.2%}")
-                col2.metric("Click Rate", f"{avg_clickrate:.2%}")
-                col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
-
-                subject_C = subject_line.title()
-                openrate_C = predict_for_subject(subject_C)
-                st.write(f'**C: "{subject_C}"** - Predicted Results:')
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Open Rate", f"{openrate_C:.2%}", f"{openrate_C - openrate_A:.2%}")
-                col2.metric("Click Rate", f"{avg_clickrate:.2%}")
-                col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
-
-                subject_D = ' '.join(subject_line.split()[:5])
-                openrate_D = predict_for_subject(subject_D)
-                st.write(f'**D: "{subject_D}"** - Predicted Results:')
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Open Rate", f"{openrate_D:.2%}", f"{openrate_D - openrate_A:.2%}")
-                col2.metric("Click Rate", f"{avg_clickrate:.2%}")
-                col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
-
-                all_options = [
-                    ('Current', subject_line, openrate_A),
-                    ('B', subject_B, openrate_B),
-                    ('C', subject_C, openrate_C),
-                    ('D', subject_D, openrate_D)
-                ]
-                best_option = max(all_options, key=lambda x: x[2])
-                
-                st.subheader("Best Option")
-                if best_option[0] == 'Current':
-                    st.write(f'**Current subject line: "{best_option[1]}"**')
-                else:
-                    st.write(f'**{best_option[0]}: "{best_option[1]}"**')
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Open Rate", f"{best_option[2]:.2%}", f"{best_option[2] - openrate_A:.2%}" if best_option[0] != 'Current' else None)
-                col2.metric("Click Rate", f"{avg_clickrate:.2%}")
-                col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
