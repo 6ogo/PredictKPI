@@ -352,7 +352,7 @@ def create_age_heatmap(heatmap_data, metric, title, cmap='viridis', figsize=(12,
         logger.error(traceback.format_exc())
         raise
 
-def create_interactive_heatmap(data, metric, title, is_percentage=True):
+def create_interactive_heatmap(data, metric, title, is_percentage=True, colorscale='Viridis'):
     """
     Create an interactive heatmap using Plotly for a specific metric
     
@@ -366,11 +366,14 @@ def create_interactive_heatmap(data, metric, title, is_percentage=True):
         The title for the heatmap
     is_percentage : bool
         Whether to format values as percentages
+    colorscale : str
+        Plotly colorscale to use
         
     Returns:
     --------
     plotly.graph_objects.Figure
     """
+    import plotly.graph_objects as go
     
     # Format data for heatmap
     z = data.values
@@ -391,7 +394,7 @@ def create_interactive_heatmap(data, metric, title, is_percentage=True):
         hoverongaps=False,
         text=hover_text,
         hoverinfo='text+x+y',
-        colorscale='Viridis'
+        colorscale=colorscale
     ))
     
     # Update layout
@@ -413,6 +416,82 @@ def create_interactive_heatmap(data, metric, title, is_percentage=True):
     )
     
     return fig
+
+def prepare_version_heatmap_data(all_options, heatmap_data, metric):
+    """
+    Prepare data for version comparison heatmap with proportional estimates for different versions
+    
+    Parameters:
+    -----------
+    all_options : list
+        List of tuples (version, subject, preheader, openrate)
+    heatmap_data : dict
+        Dictionary of heatmap data by metric
+    metric : str
+        Metric to use ('Openrate', 'Clickrate', 'Optoutrate')
+    
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with age groups as index and versions as columns
+    """
+    # Get base data and age groups
+    base_data = heatmap_data[metric].copy()
+    age_groups = base_data.index
+    
+    # Create new DataFrame with just age groups
+    version_data = pd.DataFrame(index=age_groups)
+    
+    # Get the baseline data and the baseline overall rate
+    baseline_values = base_data['Overall'].values
+    
+    # For openrate: use the predicted values from the model
+    if metric == 'Openrate':
+        # Find the baseline (version A) open rate
+        baseline_overall = next(rate for ver, _, _, rate in all_options if ver == 'A')
+        
+        for version, _, _, predicted_rate in all_options:
+            # Calculate the ratio between this version's predicted rate and the baseline
+            if baseline_overall > 0:
+                adjustment_ratio = predicted_rate / baseline_overall
+            else:
+                adjustment_ratio = 1.0
+                
+            # Apply this ratio to adjust each age group's rate
+            # Use numpy's clip to ensure values stay in reasonable range (0-100%)
+            adjusted_values = np.clip(baseline_values * adjustment_ratio, 0, 1)
+            
+            # Add to dataframe
+            version_data[f"Version {version}"] = adjusted_values
+            
+    # For clickrate and optoutrate: simulate effect based on open rate change
+    else:
+        # Find baseline values
+        baseline_overall = next(rate for ver, _, _, rate in all_options if ver == 'A')
+        
+        for version, _, _, predicted_rate in all_options:
+            # Calculate modification based on open rate change (simplified model)
+            # Assumption: as open rate increases, click rate increases proportionally but less dramatically
+            # and optout rate decreases slightly
+            if baseline_overall > 0:
+                ratio = predicted_rate / baseline_overall
+                
+                if metric == 'Clickrate':
+                    # Click rate increases with open rate but with diminishing returns
+                    adjustment_ratio = 1.0 + (ratio - 1.0) * 0.7
+                else:  # Optoutrate
+                    # Optout rate slightly decreases as open rate increases (inverse relationship)
+                    adjustment_ratio = 1.0 - (ratio - 1.0) * 0.3
+            else:
+                adjustment_ratio = 1.0
+                
+            # Apply adjustment
+            adjusted_values = np.clip(baseline_values * adjustment_ratio, 0, 1)
+            
+            # Add to dataframe
+            version_data[f"Version {version}"] = adjusted_values
+    
+    return version_data
 
 # --- Model Version Management ---
 def get_model_filename(version=CURRENT_MODEL_VERSION):
@@ -1833,13 +1912,6 @@ def main():
                     syfte_exists = syfte_col in model_columns
                     product_exists = product_col in model_columns
                     
-                    if not dialog_exists:
-                        st.warning(f"Selected Dialog '{selected_dialog_code}' maps to column '{dialog_col}' which is not found in model features.")
-                    if not syfte_exists:
-                        st.warning(f"Selected Syfte '{selected_syfte_code}' maps to column '{syfte_col}' which is not found in model features.")
-                    if not product_exists:
-                        st.warning(f"Selected Product '{selected_product_code}' maps to column '{product_col}' which is not found in model features.")
-                    
                     # Only set columns that exist in the model
                     if dialog_exists and dialog_col in base_input_data.columns:
                         base_input_data[dialog_col] = 1
@@ -2059,33 +2131,57 @@ def main():
                                                     col1.metric("Open Rate", f"{openrate:.2%}", f"{delta:.2%}" if delta is not None else None)
                                                     col2.metric("Click Rate", f"{avg_clickrate:.2%}")
                                                     col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
-                                                    
-                                                    # Add age group heatmaps for each version
-                                                    st.write("---")
-                                                    with st.expander("View Age Group Analysis", expanded=False):
-                                                        try:
-                                                            # Create age group heatmaps using plotly
-                                                            col1, col2, col3 = st.columns(3)
-                                                            
-                                                            with col1:
-                                                                # Filter data to include only 'Overall'
-                                                                open_data = heatmap_data['Openrate'][['Overall']]
-                                                                fig = create_interactive_heatmap(open_data, 'Openrate', 'Open Rate by Age Group')
-                                                                st.plotly_chart(fig, use_container_width=True)
-                                                            
-                                                            with col2:
-                                                                click_data = heatmap_data['Clickrate'][['Overall']]
-                                                                fig = create_interactive_heatmap(click_data, 'Clickrate', 'Click Rate by Age Group')
-                                                                st.plotly_chart(fig, use_container_width=True)
-                                                            
-                                                            with col3:
-                                                                optout_data = heatmap_data['Optoutrate'][['Overall']]
-                                                                fig = create_interactive_heatmap(optout_data, 'Optoutrate', 'Opt-out Rate by Age Group')
-                                                                st.plotly_chart(fig, use_container_width=True)
-                                                        except Exception as e:
-                                                            st.error(f"Error displaying age group heatmaps: {str(e)}")
-                                                            logger.error(f"Error displaying age group heatmaps: {str(e)}")
-                                                            logger.error(traceback.format_exc())
+                                        
+                                        # Version comparison heatmaps - put this OUTSIDE the version expanders
+                                        # to avoid nested expanders which cause the error
+                                        st.subheader("Age Group Analysis Across Versions")
+                                        try:
+                                            # Create tabs for different metrics
+                                            metric_tabs = st.tabs(["Open Rate", "Click Rate", "Opt-out Rate"])
+                                            
+                                            with metric_tabs[0]:
+                                                # Prepare data with all versions using proportional estimates
+                                                version_open_data = prepare_version_heatmap_data(all_options, heatmap_data, 'Openrate')
+                                                
+                                                # Calculate the version with best performance for each age group
+                                                best_version_by_age = version_open_data.idxmax(axis=1)
+                                                
+                                                fig = create_interactive_heatmap(version_open_data, 'Openrate', 
+                                                                            'Open Rate by Age Group and Version',
+                                                                            colorscale='Viridis')
+                                                st.plotly_chart(fig, use_container_width=True)
+                                                
+                                                # Show which version is best for each age group
+                                                st.subheader("Best Version by Age Group (Open Rate)")
+                                                best_df = pd.DataFrame({
+                                                    'Age Group': best_version_by_age.index,
+                                                    'Best Version': best_version_by_age.values,
+                                                    'Estimated Open Rate': [version_open_data.loc[age, ver] for age, ver in zip(best_version_by_age.index, best_version_by_age.values)]
+                                                })
+                                                st.dataframe(best_df.set_index('Age Group'), use_container_width=True)
+                                            
+                                            with metric_tabs[1]:
+                                                version_click_data = prepare_version_heatmap_data(all_options, heatmap_data, 'Clickrate')
+                                                fig = create_interactive_heatmap(version_click_data, 'Clickrate', 
+                                                                            'Click Rate by Age Group and Version',
+                                                                            colorscale='Blues')
+                                                st.plotly_chart(fig, use_container_width=True)
+                                            
+                                            with metric_tabs[2]:
+                                                version_optout_data = prepare_version_heatmap_data(all_options, heatmap_data, 'Optoutrate')
+                                                fig = create_interactive_heatmap(version_optout_data, 'Optoutrate', 
+                                                                            'Opt-out Rate by Age Group and Version',
+                                                                            colorscale='Reds')
+                                                st.plotly_chart(fig, use_container_width=True)
+                                                
+                                            st.caption("""Note: These heatmaps show estimated performance by age group for each version.
+                                        The estimates are based on the overall predicted open rate and how it might affect different age groups proportionally.
+                                        For open rates, the estimations apply the ratio between predicted rates to the baseline age distribution.
+                                        For click and opt-out rates, simulated effects are derived from the open rate changes.""")
+                                        except Exception as e:
+                                            st.error(f"Error displaying age group heatmaps: {str(e)}")
+                                            logger.error(f"Error displaying age group heatmaps: {str(e)}")
+                                            logger.error(traceback.format_exc())
                                         
                                         # Find the best option
                                         best_option = max(all_options, key=lambda x: x[3])
@@ -2097,18 +2193,16 @@ def main():
                                         if best_option[0] != 'A':
                                             improvement = best_option[3] - openrate_A
                                             st.write(f"Improvement over current version: **{improvement:.2%}**")
-                                    else:
-                                        st.warning("No valid alternatives generated.")
                                 except Exception as e:
                                     st.error(f"Error processing alternatives: {str(e)}")
                                     logger.error(f"Error processing alternatives: {str(e)}")
                                     logger.error(traceback.format_exc())
-                else:
-                    st.info("Enable GenAI to generate alternative subject lines and preheaders.")
+
             except Exception as e:
-                st.error(f"Error in prediction: {str(e)}")
-                logger.error(f"Error in prediction: {str(e)}")
+                st.error(f"Error setting up prediction: {str(e)}")
+                logger.error(f"Error setting up prediction: {str(e)}")
                 logger.error(traceback.format_exc())
+                return
 
 if __name__ == '__main__':
     main()
