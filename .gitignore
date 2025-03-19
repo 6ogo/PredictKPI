@@ -180,3 +180,4 @@ Grok/xgboost_model.pkl
 Grok/models/xgboost_model_v2.0.0_metadata.yaml
 /Grok/models
 Grok/xgboost_model.pkl
+required columns for KPI predictor.txt
