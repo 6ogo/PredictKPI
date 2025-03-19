@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 from xgboost import XGBRegressor
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import train_test_split, KFold, GridSearchCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,12 +10,20 @@ import json
 from dotenv import load_dotenv
 import os
 import joblib
+import groq
 import datetime
 import logging
 import traceback
 import shutil
 import yaml
 from pathlib import Path
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.impute import SimpleImputer
+from sklearn.decomposition import PCA
+import plotly.graph_objects as go
 
 # Set up logging configuration
 logging.basicConfig(
@@ -121,6 +129,290 @@ PRODUKT_VALUES = {
 # Ensure directories exist
 for directory in [MODEL_BASE_DIR, DOCS_DIR]:
     os.makedirs(directory, exist_ok=True)
+
+# --- Age Group Utils ---
+def categorize_age(age):
+    """
+    Categorize age into predefined age groups
+    """
+    if 18 <= age <= 24:
+        return '18-24'
+    elif 25 <= age <= 29:
+        return '25-29'
+    elif 30 <= age <= 39:
+        return '30-39'
+    elif 40 <= age <= 49:
+        return '40-49'
+    elif 50 <= age <= 59:
+        return '50-59'
+    elif 60 <= age <= 69:
+        return '60-69'
+    elif 70 <= age <= 79:
+        return '70-79'
+    elif 80 <= age <= 89:
+        return '80-89'
+    elif 90 <= age <= 100:
+        return '90-100'
+    else:
+        return 'Other'
+
+def process_data_for_age_heatmap(delivery_data, customer_data):
+    """
+    Process data for age group heatmap
+    """
+    try:
+        logger.info("Processing data for age group heatmap")
+        
+        # Add age group to customer data
+        customer_data['AgeGroup'] = customer_data['Age'].apply(categorize_age)
+        
+        # Merge customer data with delivery data
+        merged_data = delivery_data.merge(customer_data, on='InternalName', how='left')
+        
+        # Ensure we have all age groups (even if zero data)
+        all_age_groups = ['18-24', '25-29', '30-39', '40-49', '50-59', '60-69', '70-79', '80-89', '90-100']
+        
+        # Calculate rates by age group
+        results = []
+        
+        # Create a dictionary to store the aggregated results by age group and product, dialog, or syfte
+        agg_by_dialog = {}
+        agg_by_syfte = {}
+        agg_by_product = {}
+        
+        # Process by age group
+        for age_group in all_age_groups:
+            age_data = merged_data[merged_data['AgeGroup'] == age_group]
+            
+            if len(age_data) == 0:
+                # Add a row with zeros if no data for this age group
+                results.append({
+                    'AgeGroup': age_group,
+                    'Openrate': 0,
+                    'Clickrate': 0,
+                    'Optoutrate': 0,
+                    'Count': 0
+                })
+            else:
+                # Calculate overall metrics
+                total_sendouts = age_data['Sendouts'].sum()
+                total_opens = age_data['Opens'].sum()
+                total_clicks = age_data['Clicks'].sum()
+                total_optouts = age_data['Optouts'].sum()
+                
+                openrate = total_opens / total_sendouts if total_sendouts > 0 else 0
+                clickrate = total_clicks / total_sendouts if total_sendouts > 0 else 0
+                optoutrate = total_optouts / total_sendouts if total_sendouts > 0 else 0
+                
+                results.append({
+                    'AgeGroup': age_group,
+                    'Openrate': openrate,
+                    'Clickrate': clickrate,
+                    'Optoutrate': optoutrate,
+                    'Count': len(age_data)
+                })
+                
+                # Aggregate by Dialog
+                for dialog in age_data['Dialog'].unique():
+                    dialog_data = age_data[age_data['Dialog'] == dialog]
+                    dialog_sendouts = dialog_data['Sendouts'].sum()
+                    dialog_opens = dialog_data['Opens'].sum()
+                    dialog_clicks = dialog_data['Clicks'].sum()
+                    dialog_optouts = dialog_data['Optouts'].sum()
+                    
+                    if dialog not in agg_by_dialog:
+                        agg_by_dialog[dialog] = {}
+                    
+                    agg_by_dialog[dialog][age_group] = {
+                        'Openrate': dialog_opens / dialog_sendouts if dialog_sendouts > 0 else 0,
+                        'Clickrate': dialog_clicks / dialog_sendouts if dialog_sendouts > 0 else 0,
+                        'Optoutrate': dialog_optouts / dialog_sendouts if dialog_sendouts > 0 else 0,
+                        'Count': len(dialog_data)
+                    }
+                
+                # Aggregate by Syfte
+                for syfte in age_data['Syfte'].unique():
+                    syfte_data = age_data[age_data['Syfte'] == syfte]
+                    syfte_sendouts = syfte_data['Sendouts'].sum()
+                    syfte_opens = syfte_data['Opens'].sum()
+                    syfte_clicks = syfte_data['Clicks'].sum()
+                    syfte_optouts = syfte_data['Optouts'].sum()
+                    
+                    if syfte not in agg_by_syfte:
+                        agg_by_syfte[syfte] = {}
+                    
+                    agg_by_syfte[syfte][age_group] = {
+                        'Openrate': syfte_opens / syfte_sendouts if syfte_sendouts > 0 else 0,
+                        'Clickrate': syfte_clicks / syfte_sendouts if syfte_sendouts > 0 else 0,
+                        'Optoutrate': syfte_optouts / syfte_sendouts if syfte_sendouts > 0 else 0,
+                        'Count': len(syfte_data)
+                    }
+                
+                # Aggregate by Product
+                for product in age_data['Product'].unique():
+                    product_data = age_data[age_data['Product'] == product]
+                    product_sendouts = product_data['Sendouts'].sum()
+                    product_opens = product_data['Opens'].sum()
+                    product_clicks = product_data['Clicks'].sum()
+                    product_optouts = product_data['Optouts'].sum()
+                    
+                    if product not in agg_by_product:
+                        agg_by_product[product] = {}
+                    
+                    agg_by_product[product][age_group] = {
+                        'Openrate': product_opens / product_sendouts if product_sendouts > 0 else 0,
+                        'Clickrate': product_clicks / product_sendouts if product_sendouts > 0 else 0,
+                        'Optoutrate': product_optouts / product_sendouts if product_sendouts > 0 else 0,
+                        'Count': len(product_data)
+                    }
+        
+        # Convert results to DataFrame
+        results_df = pd.DataFrame(results)
+        
+        # Create a uniform DataFrame for each metric
+        metrics = ['Openrate', 'Clickrate', 'Optoutrate']
+        heatmap_data = {metric: pd.DataFrame(index=all_age_groups) for metric in metrics}
+        
+        # Prepare for overall heatmap
+        for metric in metrics:
+            heatmap_data[metric]['Overall'] = results_df.set_index('AgeGroup')[metric]
+        
+        # Add dialog, syfte, and product information
+        for dialog, data in agg_by_dialog.items():
+            for metric in metrics:
+                dialog_values = [data.get(age_group, {}).get(metric, 0) for age_group in all_age_groups]
+                display_dialog = next((label for code, label in DIALOG_VALUES.items() if code[0] == dialog), dialog)
+                heatmap_data[metric][f"Dialog: {display_dialog}"] = dialog_values
+        
+        for syfte, data in agg_by_syfte.items():
+            for metric in metrics:
+                syfte_values = [data.get(age_group, {}).get(metric, 0) for age_group in all_age_groups]
+                display_syfte = next((label for code, label in SYFTE_VALUES.items() if code[0] == syfte), syfte)
+                heatmap_data[metric][f"Syfte: {display_syfte}"] = syfte_values
+        
+        for product, data in agg_by_product.items():
+            for metric in metrics:
+                product_values = [data.get(age_group, {}).get(metric, 0) for age_group in all_age_groups]
+                display_product = next((label for code, label in PRODUKT_VALUES.items() if code[0] == product), product)
+                heatmap_data[metric][f"Product: {display_product}"] = product_values
+        
+        return heatmap_data, results_df
+    except Exception as e:
+        logger.error(f"Error processing data for age heatmap: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
+
+def create_age_heatmap(heatmap_data, metric, title, cmap='viridis', figsize=(12, 6)):
+    """
+    Create a heatmap for a specific metric by age group
+    """
+    try:
+        # Create figure and axes
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # Get data for this metric
+        data = heatmap_data[metric].copy()
+        
+        # Ensure data is numeric
+        data = data.astype(float)
+        
+        # Format values as percentages
+        labels = data.applymap(lambda x: f"{x:.2%}")
+        
+        # Create heatmap
+        im = ax.imshow(data, cmap=cmap, aspect='auto')
+        
+        # Show all ticks and label them
+        ax.set_xticks(np.arange(len(data.columns)))
+        ax.set_yticks(np.arange(len(data.index)))
+        ax.set_xticklabels(data.columns)
+        ax.set_yticklabels(data.index)
+        
+        # Rotate the tick labels and set their alignment
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+        
+        # Loop over data dimensions and create text annotations
+        for i in range(len(data.index)):
+            for j in range(len(data.columns)):
+                ax.text(j, i, labels.iloc[i, j],
+                        ha="center", va="center", 
+                        color="white" if data.iloc[i, j] > data.values.mean() else "black")
+        
+        # Add colorbar
+        cbar = ax.figure.colorbar(im, ax=ax)
+        cbar.ax.set_ylabel(f"{title} (%)", rotation=-90, va="bottom")
+        
+        # Add title and adjust layout
+        ax.set_title(title)
+        fig.tight_layout()
+        
+        return fig
+    except Exception as e:
+        logger.error(f"Error creating heatmap: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
+
+def create_interactive_heatmap(data, metric, title, is_percentage=True):
+    """
+    Create an interactive heatmap using Plotly for a specific metric
+    
+    Parameters:
+    -----------
+    data : pd.DataFrame
+        DataFrame with age groups as index and categories as columns
+    metric : str
+        The metric name ('Openrate', 'Clickrate', or 'Optoutrate')
+    title : str
+        The title for the heatmap
+    is_percentage : bool
+        Whether to format values as percentages
+        
+    Returns:
+    --------
+    plotly.graph_objects.Figure
+    """
+    
+    # Format data for heatmap
+    z = data.values
+    x = data.columns
+    y = data.index
+    
+    # Format values for hover text
+    if is_percentage:
+        hover_text = [[f"{z[i][j]:.2%}" for j in range(len(x))] for i in range(len(y))]
+    else:
+        hover_text = [[f"{z[i][j]:.4f}" for j in range(len(x))] for i in range(len(y))]
+    
+    # Create heatmap
+    fig = go.Figure(data=go.Heatmap(
+        z=z,
+        x=x,
+        y=y,
+        hoverongaps=False,
+        text=hover_text,
+        hoverinfo='text+x+y',
+        colorscale='Viridis'
+    ))
+    
+    # Update layout
+    fig.update_layout(
+        title=title,
+        xaxis_title='Category',
+        yaxis_title='Age Group',
+        xaxis=dict(
+            tickangle=-45,
+            side='bottom',
+            tickfont=dict(size=10)
+        ),
+        yaxis=dict(
+            autorange='reversed',  # Important to make age groups go from youngest to oldest
+            tickfont=dict(size=10)
+        ),
+        height=400,
+        margin=dict(l=50, r=50, t=80, b=100)
+    )
+    
+    return fig
 
 # --- Model Version Management ---
 def get_model_filename(version=CURRENT_MODEL_VERSION):
@@ -256,17 +548,58 @@ def engineer_features(delivery_data, customer_data, include_preheader=True):
         delivery_data['Has_exclamation'] = delivery_data['Subject'].str.contains('!').astype(int)
         delivery_data['Has_question'] = delivery_data['Subject'].str.contains(r'\?', regex=True).astype(int)
         
-        # New feature names (version 2.x)
+        # Enhanced text features for subject (version 2.x+)
         delivery_data['Subject_num_words'] = delivery_data['Subject'].str.split().str.len()
         delivery_data['Subject_has_exclamation'] = delivery_data['Subject'].str.contains('!').astype(int)
         delivery_data['Subject_has_question'] = delivery_data['Subject'].str.contains(r'\?', regex=True).astype(int)
         
+        # Add more sophisticated text features for subject
+        delivery_data['Subject_caps_ratio'] = delivery_data['Subject'].apply(
+            lambda x: sum(1 for c in str(x) if c.isupper()) / len(str(x)) if len(str(x)) > 0 else 0
+        )
+        
+        delivery_data['Subject_avg_word_len'] = delivery_data['Subject'].apply(
+            lambda x: np.mean([len(w) for w in str(x).split()]) if len(str(x).split()) > 0 else 0
+        )
+        
+        # Count specific characters that might impact open rates
+        delivery_data['Subject_num_special_chars'] = delivery_data['Subject'].apply(
+            lambda x: sum(1 for c in str(x) if c in '!?%$€£#@*&')
+        )
+        
+        # Extract first and last words of subject (useful for headlines)
+        delivery_data['Subject_first_word_len'] = delivery_data['Subject'].apply(
+            lambda x: len(str(x).split()[0]) if len(str(x).split()) > 0 else 0
+        )
+        
+        delivery_data['Subject_last_word_len'] = delivery_data['Subject'].apply(
+            lambda x: len(str(x).split()[-1]) if len(str(x).split()) > 0 else 0
+        )
+        
         # Add preheader features if requested (for version 2.x)
         if include_preheader:
+            # Basic preheader features
             delivery_data['Preheader_length'] = delivery_data['Preheader'].str.len()
             delivery_data['Preheader_num_words'] = delivery_data['Preheader'].str.split().str.len()
             delivery_data['Preheader_has_exclamation'] = delivery_data['Preheader'].str.contains('!').astype(int)
             delivery_data['Preheader_has_question'] = delivery_data['Preheader'].str.contains(r'\?', regex=True).astype(int)
+            
+            # Enhanced preheader features
+            delivery_data['Preheader_caps_ratio'] = delivery_data['Preheader'].apply(
+                lambda x: sum(1 for c in str(x) if c.isupper()) / len(str(x)) if len(str(x)) > 0 else 0
+            )
+            
+            delivery_data['Preheader_avg_word_len'] = delivery_data['Preheader'].apply(
+                lambda x: np.mean([len(w) for w in str(x).split()]) if len(str(x).split()) > 0 else 0
+            )
+            
+            delivery_data['Preheader_num_special_chars'] = delivery_data['Preheader'].apply(
+                lambda x: sum(1 for c in str(x) if c in '!?%$€£#@*&')
+            )
+            
+            # Relationship between subject and preheader
+            delivery_data['Subject_preheader_length_ratio'] = delivery_data['Subject_length'] / delivery_data['Preheader_length'].replace(0, 1)
+            delivery_data['Subject_preheader_words_ratio'] = delivery_data['Subject_num_words'] / delivery_data['Preheader_num_words'].replace(0, 1)
         
         # Define feature columns
         categorical_features = ['Dialog', 'Syfte', 'Product']
@@ -279,13 +612,17 @@ def engineer_features(delivery_data, customer_data, include_preheader=True):
         
         v2_numerical_features = [
             'Min_age', 'Max_age', 
-            'Subject_length', 'Subject_num_words', 'Subject_has_exclamation', 'Subject_has_question'
+            'Subject_length', 'Subject_num_words', 'Subject_has_exclamation', 'Subject_has_question',
+            'Subject_caps_ratio', 'Subject_avg_word_len', 'Subject_num_special_chars',
+            'Subject_first_word_len', 'Subject_last_word_len'
         ]
         
         if include_preheader:
             v2_numerical_features.extend([
                 'Preheader_length', 'Preheader_num_words', 
-                'Preheader_has_exclamation', 'Preheader_has_question'
+                'Preheader_has_exclamation', 'Preheader_has_question',
+                'Preheader_caps_ratio', 'Preheader_avg_word_len', 'Preheader_num_special_chars',
+                'Subject_preheader_length_ratio', 'Subject_preheader_words_ratio'
             ])
         
         bolag_features_list = [col for col in delivery_data.columns if col.startswith('Bolag_')]
@@ -573,6 +910,73 @@ def cross_validate_model(X_train, y_train, params=None, n_splits=5, sample_weigh
         return cv_results
     except Exception as e:
         logger.error(f"Error in cross-validation: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
+
+def tune_hyperparameters(X_train, y_train, param_grid=None, cv=5, sample_weights=None):
+    """
+    Tune model hyperparameters using GridSearchCV
+    
+    Parameters:
+    -----------
+    X_train : DataFrame
+        Training features
+    y_train : Series
+        Target variable
+    param_grid : dict
+        Parameter grid for GridSearchCV
+    cv : int
+        Number of cross-validation folds
+    sample_weights : array-like
+        Sample weights for training
+        
+    Returns:
+    --------
+    dict
+        Best parameters found by GridSearchCV
+    """
+    try:
+        if param_grid is None:
+            param_grid = {
+                'n_estimators': [100, 200, 300],
+                'max_depth': [4, 6, 8],
+                'learning_rate': [0.01, 0.04, 0.1],
+                'reg_lambda': [0.5, 1.0, 1.7],
+                'subsample': [0.8, 1.0],
+                'colsample_bytree': [0.8, 1.0]
+            }
+            
+        logger.info(f"Starting hyperparameter tuning with param grid: {param_grid}")
+        st.info("Tuning hyperparameters... This may take some time.")
+        
+        model = XGBRegressor(objective='reg:squarederror', random_state=42)
+        
+        # Implement GridSearchCV with early stopping
+        grid_search = GridSearchCV(
+            estimator=model,
+            param_grid=param_grid,
+            scoring='neg_root_mean_squared_error',
+            cv=cv,
+            n_jobs=-1,
+            verbose=1
+        )
+        
+        # Fit with sample weights if provided
+        if sample_weights is not None:
+            grid_search.fit(X_train, y_train, sample_weight=sample_weights)
+        else:
+            grid_search.fit(X_train, y_train)
+        
+        best_params = grid_search.best_params_
+        best_score = grid_search.best_score_
+        
+        logger.info(f"Best parameters: {best_params}")
+        logger.info(f"Best RMSE score: {-best_score:.6f}")
+        
+        return best_params, best_score
+        
+    except Exception as e:
+        logger.error(f"Error in hyperparameter tuning: {str(e)}")
         logger.error(traceback.format_exc())
         raise
 
@@ -941,8 +1345,33 @@ def main():
             st.error(f"Error training model: {str(e)}")
             return
     
+    # Initialize variables with default values to prevent UnboundLocalError
+    test_metrics = {'mse': 0, 'rmse': 0, 'mae': 0, 'r2': 0}
+    y_pred_test = None
+    cv_results = {
+        'mse': {'mean': 0, 'std': 0, 'scores': []},
+        'rmse': {'mean': 0, 'std': 0, 'scores': []},
+        'mae': {'mean': 0, 'std': 0, 'scores': []},
+        'r2': {'mean': 0, 'std': 0, 'scores': []}
+    }
+    full_metrics = {'mse': 0, 'rmse': 0, 'mae': 0, 'r2': 0}
+    y_pred_full = None
+    
     # Evaluate model
     try:
+        # Adapt features to match model's expected features
+        if hasattr(model, 'feature_names_'):
+            logger.info("Adapting features to match model expectations")
+            X_train_adapted = adapt_features_to_model(model, X_train)
+            X_test_adapted = adapt_features_to_model(model, X_test)
+            features_adapted = adapt_features_to_model(model, features)
+            
+            # Use adapted features
+            X_train, X_test = X_train_adapted, X_test_adapted
+            features_for_prediction = features_adapted
+        else:
+            features_for_prediction = features
+        
         # Cross-validation
         cv_results = cross_validate_model(
             X_train, y_train, 
@@ -954,7 +1383,7 @@ def main():
         test_metrics, y_pred_test = evaluate_model(model, X_test, y_test)
         
         # Full dataset verification
-        full_metrics, y_pred_full = evaluate_model(model, features, target)
+        full_metrics, y_pred_full = evaluate_model(model, features_for_prediction, target)
         
         # Generate documentation
         if not os.path.exists(os.path.join(DOCS_DIR, f"model_v{selected_version}", 'model_documentation.yaml')):
@@ -977,6 +1406,7 @@ def main():
         st.error(f"Error evaluating model: {str(e)}")
         logger.error(f"Error evaluating model: {str(e)}")
         logger.error(traceback.format_exc())
+        st.warning("Using default metrics due to evaluation error. Some visualizations may not be available.")
     
     # Create tabs
     tab1, tab2 = st.tabs(['Sendout Prediction', 'Model Results'])
@@ -1157,6 +1587,50 @@ def main():
         col1.metric("Root MSE", f"{full_metrics['rmse']:.6f}")
         col2.metric("Mean Absolute Error", f"{full_metrics['mae']:.6f}")
         col2.metric("R² Score", f"{full_metrics['r2']:.4f}")
+        
+        # Age group heatmap
+        with st.expander("Age Group Analysis", expanded=False):
+            try:
+                st.write("This analysis shows engagement metrics (Open rate, Click rate, and Opt-out rate) by age group.")
+                
+                # Process data for heatmap
+                heatmap_data, results_df = process_data_for_age_heatmap(delivery_data, customer_data)
+                
+                # Display selector for what to show in heatmap
+                view_options = ["Overall"]
+                view_options.extend([col for col in heatmap_data['Openrate'].columns if col != "Overall"])
+                selected_views = st.multiselect("Select views to display", options=view_options, default=["Overall"])
+                
+                if selected_views:
+                    # Filter data to selected views
+                    filtered_data = {
+                        metric: data[selected_views] for metric, data in heatmap_data.items()
+                    }
+                    
+                    # Create tabs for different metrics
+                    metric_tabs = st.tabs(["Open Rate", "Click Rate", "Opt-out Rate"])
+                    
+                    with metric_tabs[0]:
+                        fig = create_age_heatmap(filtered_data, 'Openrate', 'Open Rate by Age Group')
+                        st.pyplot(fig)
+                    
+                    with metric_tabs[1]:
+                        fig = create_age_heatmap(filtered_data, 'Clickrate', 'Click Rate by Age Group')
+                        st.pyplot(fig)
+                    
+                    with metric_tabs[2]:
+                        fig = create_age_heatmap(filtered_data, 'Optoutrate', 'Opt-out Rate by Age Group')
+                        st.pyplot(fig)
+                    
+                    # Display raw data
+                    if st.checkbox("Show raw data"):
+                        st.dataframe(results_df)
+                else:
+                    st.info("Please select at least one view to display.")
+            except Exception as e:
+                st.error(f"Error in age group analysis: {str(e)}")
+                logger.error(f"Error in age group analysis: {str(e)}")
+                logger.error(traceback.format_exc())
         
         # Feature importances
         st.subheader("Feature Importances")
@@ -1425,11 +1899,29 @@ def main():
                         input_data['Subject_has_exclamation'] = 1 if '!' in subject_line else 0
                         input_data['Subject_has_question'] = 1 if '?' in subject_line else 0
                         
+                        # Set advanced subject features
+                        input_data['Subject_caps_ratio'] = sum(1 for c in str(subject_line) if c.isupper()) / len(str(subject_line)) if len(str(subject_line)) > 0 else 0
+                        input_data['Subject_avg_word_len'] = np.mean([len(w) for w in str(subject_line).split()]) if len(str(subject_line).split()) > 0 else 0
+                        input_data['Subject_num_special_chars'] = sum(1 for c in str(subject_line) if c in '!?%$€£#@*&')
+                        input_data['Subject_first_word_len'] = len(str(subject_line).split()[0]) if len(str(subject_line).split()) > 0 else 0
+                        input_data['Subject_last_word_len'] = len(str(subject_line).split()[-1]) if len(str(subject_line).split()) > 0 else 0
+                        
                         # Set preheader features
                         input_data['Preheader_length'] = len(preheader)
                         input_data['Preheader_num_words'] = len(preheader.split())
                         input_data['Preheader_has_exclamation'] = 1 if '!' in preheader else 0
                         input_data['Preheader_has_question'] = 1 if '?' in preheader else 0
+                        
+                        # Set advanced preheader features
+                        input_data['Preheader_caps_ratio'] = sum(1 for c in str(preheader) if c.isupper()) / len(str(preheader)) if len(str(preheader)) > 0 else 0
+                        input_data['Preheader_avg_word_len'] = np.mean([len(w) for w in str(preheader).split()]) if len(str(preheader).split()) > 0 else 0
+                        input_data['Preheader_num_special_chars'] = sum(1 for c in str(preheader) if c in '!?%$€£#@*&')
+                        
+                        # Set relationship features
+                        preheader_len = len(preheader) if len(preheader) > 0 else 1
+                        preheader_words = len(preheader.split()) if len(preheader.split()) > 0 else 1
+                        input_data['Subject_preheader_length_ratio'] = len(subject_line) / preheader_len
+                        input_data['Subject_preheader_words_ratio'] = len(subject_line.split()) / preheader_words
                         
                         # Check if the input data matches the model's expected columns
                         if hasattr(model, 'feature_names_'):
@@ -1466,6 +1958,36 @@ def main():
                 col2.metric("Click Rate", f"{avg_clickrate:.2%}")
                 col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
                 
+                # Age group analysis
+                try:
+                    # Process data for heatmap
+                    heatmap_data, _ = process_data_for_age_heatmap(delivery_data, customer_data)
+                    
+                    with st.expander("Age Group Analysis", expanded=False):
+                        st.write("This analysis shows open rate, click rate, and opt-out rate by age group.")
+                        
+                        # Create tabs for different metrics
+                        metric_tabs = st.tabs(["Open Rate", "Click Rate", "Opt-out Rate"])
+                        
+                        with metric_tabs[0]:
+                            open_data = heatmap_data['Openrate'][['Overall']]
+                            fig = create_interactive_heatmap(open_data, 'Openrate', 'Open Rate by Age Group')
+                            st.plotly_chart(fig, use_container_width=True)
+                        
+                        with metric_tabs[1]:
+                            click_data = heatmap_data['Clickrate'][['Overall']]
+                            fig = create_interactive_heatmap(click_data, 'Clickrate', 'Click Rate by Age Group')
+                            st.plotly_chart(fig, use_container_width=True)
+                        
+                        with metric_tabs[2]:
+                            optout_data = heatmap_data['Optoutrate'][['Overall']]
+                            fig = create_interactive_heatmap(optout_data, 'Optoutrate', 'Opt-out Rate by Age Group')
+                            st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error in age group analysis: {str(e)}")
+                    logger.error(f"Error in age group analysis: {str(e)}")
+                    logger.error(traceback.format_exc())
+                
                 # A/B/C/D Testing with Groq API including Preheader
                 if use_genai:
                     if st.button('Send to Groq API'):
@@ -1498,7 +2020,7 @@ def main():
                                     
                                     if options:
                                         # Add current option as Version A
-                                        all_options = [('A', subject_line, preheader, openrate_A)] + [(chr(66 + i), s, p, o) for i, (_, s, p, o) in enumerate(options)]
+                                        all_options = [('A', subject_line, preheader, openrate_A)] + options
                                         
                                         st.subheader("A/B/C/D Test Results")
                                         
@@ -1510,7 +2032,7 @@ def main():
                                                 # Create a container with border for each version
                                                 with st.expander(f"**Version {opt}**", expanded=True):
                                                     is_current = opt == 'A'
-                                                    is_best = openrate == max(o for _, _, _, o in all_options)
+                                                    is_best = openrate == max(o[3] for o in all_options)
                                                     
                                                     # Add a "Current" or "Best" badge if applicable
                                                     badges = []
@@ -1537,6 +2059,33 @@ def main():
                                                     col1.metric("Open Rate", f"{openrate:.2%}", f"{delta:.2%}" if delta is not None else None)
                                                     col2.metric("Click Rate", f"{avg_clickrate:.2%}")
                                                     col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
+                                                    
+                                                    # Add age group heatmaps for each version
+                                                    st.write("---")
+                                                    with st.expander("View Age Group Analysis", expanded=False):
+                                                        try:
+                                                            # Create age group heatmaps using plotly
+                                                            col1, col2, col3 = st.columns(3)
+                                                            
+                                                            with col1:
+                                                                # Filter data to include only 'Overall'
+                                                                open_data = heatmap_data['Openrate'][['Overall']]
+                                                                fig = create_interactive_heatmap(open_data, 'Openrate', 'Open Rate by Age Group')
+                                                                st.plotly_chart(fig, use_container_width=True)
+                                                            
+                                                            with col2:
+                                                                click_data = heatmap_data['Clickrate'][['Overall']]
+                                                                fig = create_interactive_heatmap(click_data, 'Clickrate', 'Click Rate by Age Group')
+                                                                st.plotly_chart(fig, use_container_width=True)
+                                                            
+                                                            with col3:
+                                                                optout_data = heatmap_data['Optoutrate'][['Overall']]
+                                                                fig = create_interactive_heatmap(optout_data, 'Optoutrate', 'Opt-out Rate by Age Group')
+                                                                st.plotly_chart(fig, use_container_width=True)
+                                                        except Exception as e:
+                                                            st.error(f"Error displaying age group heatmaps: {str(e)}")
+                                                            logger.error(f"Error displaying age group heatmaps: {str(e)}")
+                                                            logger.error(traceback.format_exc())
                                         
                                         # Find the best option
                                         best_option = max(all_options, key=lambda x: x[3])
