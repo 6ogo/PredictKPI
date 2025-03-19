@@ -35,7 +35,88 @@ GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 # --- Constants and Configuration ---
 MODEL_BASE_DIR = 'models'
 DOCS_DIR = 'Docs'
-CURRENT_MODEL_VERSION = '2.0.0'  # Major.Minor.Patch
+
+# Generate current model version based on date (YY.MM.DD format)
+def get_current_model_version():
+    """
+    Generate a model version based on the current date in YY.MM.DD format
+    """
+    today = datetime.datetime.now()
+    return f"{today.strftime('%y.%m.%d')}"
+
+CURRENT_MODEL_VERSION = get_current_model_version()  # e.g., 25.03.18 for March 18, 2025
+
+# --- Enum Constants ---
+BOLAG_VALUES = {
+    "Blekinge": "Blekinge", "Dalarna": "Dalarna", "Älvsborg": "Älvsborg", "Gävleborg": "Gävleborg",
+    "Göinge-Kristianstad": "Göinge-Kristianstad", "Göteborg och Bohuslän": "Göteborg och Bohuslän", "Halland": "Halland",
+    "Jämtland": "Jämtland", "Jönköping": "Jönköping", "Kalmar": "Kalmar", "Kronoberg": "Kronoberg",
+    "Norrbotten": "Norrbotten", "Skaraborg": "Skaraborg", "Stockholm": "Stockholm", "Södermanland": "Södermanland",
+    "Uppsala": "Uppsala", "Värmland": "Värmland", "Västerbotten": "Västerbotten", "Västernorrland": "Västernorrland",
+    "Bergslagen": "Bergslagen", "Östgöta": "Östgöta", "Gotland": "Gotland", "Skåne": "Skåne"
+}
+
+SYFTE_VALUES = {
+    "AKUT": ["AKT", "AKUT"], "AVSLUT": ["AVS", "AVSLUT"], "AVSLUT Kund": ["AVS_K", "AVSLUT Kund"],
+    "AVSLUT Produkt": ["AVS_P", "AVSLUT Produkt"], "BEHÅLLA": ["BHA", "BEHÅLLA"],
+    "BEHÅLLA Betalpåminnelse": ["BHA_P", "BEHÅLLA Betalpåminnelse"], "BEHÅLLA Inför förfall": ["BHA_F", "BEHÅLLA Inför förfall"],
+    "TEST": ["TST", "TEST"], "VINNA": ["VIN", "VINNA"], "VINNA Provapå till riktig": ["VIN_P", "VINNA Provapå till riktig"],
+    "VÄLKOMNA": ["VLK", "VÄLKOMNA"], "VÄLKOMNA Nykund": ["VLK_K", "VÄLKOMNA Nykund"],
+    "VÄLKOMNA Nyprodukt": ["VLK_P", "VÄLKOMNA Nyprodukt"], "VÄLKOMNA Tillbaka": ["VLK_T", "VÄLKOMNA Tillbaka"],
+    "VÄXA": ["VXA", "VÄXA"], "VÄXA Korsförsäljning": ["VXA_K", "VÄXA Korsförsäljning"],
+    "VÄXA Merförsäljning": ["VXA_M", "VÄXA Merförsäljning"], "VÅRDA": ["VRD", "VÅRDA"],
+    "VÅRDA Betalsätt": ["VRD_B", "VÅRDA Betalsätt"], "VÅRDA Event": ["VRD_E", "VÅRDA Event"],
+    "VÅRDA Information": ["VRD_I", "VÅRDA Information"], "VÅRDA Lojalitet förmånskund": ["VRD_L", "VÅRDA Lojalitet förmånskund"],
+    "VÅRDA Nyhetsbrev": ["VRD_N", "VÅRDA Nyhetsbrev"], "VÅRDA Skadeförebygg": ["VRD_S", "VÅRDA Skadeförebygg"],
+    "VÅRDA Undersökning": ["VRD_U", "VÅRDA Undersökning"], "ÅTERTAG": ["ATG", "ÅTERTAG"],
+    "ÖVRIGT": ["OVR", "ÖVRIGT"]
+}
+
+DIALOG_VALUES = {
+    "BANK": ["BNK", "BANK"], "BANK LFF": ["LFF", "BANK LFF"], "BOENDE": ["BO", "BOENDE"],
+    "DROP-OFF": ["DRP", "DROP-OFF"], "FORDON": ["FRD", "FORDON"], "FÖRETAGARBREVET": ["FTB", "FÖRETAGARBREVET"],
+    "FÖRETAGSFÖRSÄKRING": ["FTG", "FÖRETAGSFÖRSÄKRING"], "HÄLSA": ["H", "HÄLSA"],
+    "KUNDNIVÅ Förmånskund": ["KFB", "KUNDNIVÅ Förmånskund"], "LIV": ["LIV", "LIV"],
+    "Livshändelse": ["LVS", "Livshändelse"], "MÅN A1 - Barnförsäkring": ["A1", "MÅN A1 - Barnförsäkring"],
+    "MÅN A10 - Förra veckans sålda": ["A10", "MÅN A10 - Förra veckans sålda"],
+    "MÅN A3 - Återtag boendeförsäkring": ["A3", "MÅN A3 - Återtag boendeförsäkring"],
+    "MÅN A7 - Återtag bilförsäkring": ["A7", "MÅN A7 - Återtag bilförsäkring"],
+    "MÅN C2 - Boende till bil": ["C2", "MÅN C2 - Boende till bil"],
+    "MÅN C3 - Bilförsäkring förfaller hos konkurrent": ["C3", "MÅN C3 - Bilförsäkring förfaller hos konkurrent"],
+    "MÅN F10 - Fasträntekontor": ["F10", "MÅN F10 - Fasträntekontor"],
+    "MÅN L1 - Bolån till boendeförsäkringskunder": ["L1", "MÅN L1 - Bolån till boendeförsäkringskunder"],
+    "MÅN L20 - Förfall bolån": ["L20", "MÅN L20 - Förfall bolån"], "MÅN L3 - Ränteförfall": ["L3", "MÅN L3 - Ränteförfall"],
+    "MÅN M1 - Märkespaket": ["M1", "MÅN M1 - Märkespaket"], "MÅN S1 - Vända pengar": ["S1", "MÅN S1 - Vända pengar"],
+    "MÅN S2 - Inflytt pensionskapital": ["S2", "MÅN S2 - Inflytt pensionskapital"], "NBO": ["FNO", "NBO"],
+    "OFFERT": ["OF", "OFFERT"], "ONEOFF": ["ONE", "ONEOFF"], "PERSON": ["P", "PERSON"],
+    "RÄDDA KVAR": ["RKR", "RÄDDA KVAR"], "TESTUTSKICK": ["TST", "TESTUTSKICK"], "ÅTERBÄRING": ["ATB", "ÅTERBÄRING"]
+}
+
+PRODUKT_VALUES = {
+    "AGRIA": ["A_A_", "AGRIA"], "BANK": ["B_B_", "BANK"], "BANK Bolån": ["B_B_B_", "BANK Bolån"],
+    "BANK Kort": ["B_K_", "BANK Kort"], "BANK Spar": ["B_S_", "BANK Spar"], "BANK Övriga lån": ["B_PL_", "BANK Övriga lån"],
+    "BO": ["BO_", "BO"], "BO Alarm": ["BO_AL_", "BO Alarm"], "BO BRF": ["BO_BR_", "BO BRF"],
+    "BO Fritid": ["BO_F_", "BO Fritid"], "BO HR": ["BO_HR_", "BO HR"], "BO Villa": ["BO_V_", "BO Villa"],
+    "BO VillaHem": ["BO_VH_", "BO VillaHem"], "BÅT": ["BT_", "BÅT"], "FOND": ["F_F_", "FOND"],
+    "FÖRETAG Företagarförsäkring": ["F_F_F_", "FÖRETAG Företagarförsäkring"],
+    "FÖRETAG Företagarförsäkring prova på": ["F_F_PR_", "FÖRETAG Företagarförsäkring prova på"],
+    "HÄLSA": ["H_H_", "HÄLSA"], "HÄLSA BoKvar": ["H_B_", "HÄLSA BoKvar"], "HÄLSA Diagnos": ["H_D_", "HÄLSA Diagnos"],
+    "HÄLSA Grupp företag": ["H_G_", "HÄLSA Grupp företag"], "HÄLSA Olycksfall": ["H_O_", "HÄLSA Olycksfall"],
+    "HÄLSA Sjukersättning": ["H_S_", "HÄLSA Sjukersättning"], "HÄLSA Sjukvårdsförsäkring": ["H_SV_", "HÄLSA Sjukvårdsförsäkring"],
+    "INGEN SPECIFIK PRODUKT": ["NA_NA_", "INGEN SPECIFIK PRODUKT"], "LANTBRUK": ["LB_", "LANTBRUK"],
+    "LIV": ["L_L_", "LIV"], "LIV Försäkring": ["L_F_", "LIV Försäkring"], "LIV Pension": ["L_P_", "LIV Pension"],
+    "MOTOR": ["M_M_", "MOTOR"], "MOTOR Personbil": ["M_PB_", "MOTOR Personbil"],
+    "MOTOR Personbil Vagnskada": ["M_PB_VG_", "MOTOR Personbil Vagnskada"],
+    "MOTOR Personbil märkes Lexus": ["M_PB_ML_", "MOTOR Personbil märkes Lexus"],
+    "MOTOR Personbil märkes Suzuki": ["M_PB_MS_", "MOTOR Personbil märkes Suzuki"],
+    "MOTOR Personbil märkes Toyota": ["M_PB_MT_", "MOTOR Personbil märkes Toyota"],
+    "MOTOR Personbil prova på": ["M_PB_PR_", "MOTOR Personbil prova på"], "MOTOR Övriga": ["M_OV_", "MOTOR Övriga"],
+    "MOTOR Övriga MC": ["M_OV_MC_", "MOTOR Övriga MC"], "MOTOR Övriga Skoter": ["M_OV_SKO_", "MOTOR Övriga Skoter"],
+    "MOTOR Övriga Släp": ["M_OV_SLP_", "MOTOR Övriga Släp"], "PERSON": ["P_P_", "PERSON"],
+    "PERSON 60plus": ["P_60_", "PERSON 60plus"], "PERSON Gravid": ["P_G_", "PERSON Gravid"],
+    "PERSON Gravid bas": ["P_G_B_", "PERSON Gravid bas"], "PERSON Gravid plus": ["P_G_P_", "PERSON Gravid plus"],
+    "PERSON OB": ["P_B_", "PERSON OB"], "PERSON OSB": ["P_OSB_", "PERSON OSB"], "PERSON OSV": ["P_OSV_", "PERSON OSV"]
+}
 
 # Ensure directories exist
 for directory in [MODEL_BASE_DIR, DOCS_DIR]:
@@ -296,6 +377,49 @@ def train_model(X_train, y_train, sample_weights=None, params=None):
         logger.error(traceback.format_exc())
         raise
 
+def train_model_with_params(X_train, y_train, params, sample_weight_config=None):
+    """
+    Train an XGBoost model with the given parameters and sample weight configuration
+    
+    Parameters:
+    -----------
+    X_train : DataFrame
+        Training features
+    y_train : Series
+        Target variable
+    params : dict
+        Model parameters for XGBRegressor
+    sample_weight_config : dict
+        Configuration for sample weights including threshold and weight ratio
+        
+    Returns:
+    --------
+    XGBRegressor
+        Trained model
+    """
+    try:
+        logger.info(f"Training XGBoost model with parameters: {params}")
+        
+        # Configure sample weights if provided
+        sample_weights = None
+        if sample_weight_config is not None:
+            threshold = sample_weight_config.get('threshold', 0.5)
+            weight_high = sample_weight_config.get('weight_high', 2.0)
+            weight_low = sample_weight_config.get('weight_low', 1.0)
+            
+            logger.info(f"Using sample weights - threshold: {threshold}, high: {weight_high}, low: {weight_low}")
+            sample_weights = np.where(y_train > threshold, weight_high, weight_low)
+        
+        # Train model
+        model = XGBRegressor(**params)
+        model.fit(X_train, y_train, sample_weight=sample_weights)
+        
+        return model
+    except Exception as e:
+        logger.error(f"Error training model with parameters: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
+
 def validate_model_features(model, features):
     """
     Validate that the features match what the model expects
@@ -303,7 +427,7 @@ def validate_model_features(model, features):
     try:
         if not hasattr(model, 'feature_names_'):
             logger.warning("Model doesn't have feature_names_ attribute. Skipping validation.")
-            return True
+            return True, "Feature validation skipped"
         
         model_features = model.feature_names_
         input_features = features.columns.tolist()
@@ -735,17 +859,19 @@ def main():
     # Split data
     X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
     
-    # Define sample weights
+    # Define default sample weights
     THRESHOLD = 0.5
     WEIGHT_HIGH = 2.0
     WEIGHT_LOW = 1.0
     sample_weights_train = np.where(y_train > THRESHOLD, WEIGHT_HIGH, WEIGHT_LOW)
     
     # Load or train model
+    model_loaded = False
     if os.path.exists(model_file) and not force_retrain:
         try:
             model = joblib.load(model_file)
             logger.info(f"Loaded model from {model_file}")
+            model_loaded = True
             
             # Validate features
             valid, message = validate_model_features(model, features)
@@ -776,10 +902,13 @@ def main():
             logger.info(f"Training new model version {selected_version}")
             st.info(f"Training new model version {selected_version}...")
             
-            # Train model
+            # Train model with default parameters
             params = {
                 'reg_lambda': 1.0,
-                'random_state': 42
+                'random_state': 42,
+                'n_estimators': 100,
+                'max_depth': 5,
+                'learning_rate': 0.1
             }
             model = train_model(X_train, y_train, sample_weights=sample_weights_train, params=params)
             
@@ -796,11 +925,18 @@ def main():
                 'test_samples': X_test.shape[0],
                 'feature_names': X_train.columns.tolist(),
                 'feature_count': X_train.shape[1],
-                'include_preheader': include_preheader
+                'include_preheader': include_preheader,
+                'model_parameters': params,
+                'sample_weights': {
+                    'threshold': THRESHOLD,
+                    'weight_high': WEIGHT_HIGH,
+                    'weight_low': WEIGHT_LOW
+                }
             }
             save_model_metadata(metadata, selected_version)
             
             st.success(f"Trained and saved new model version {selected_version}")
+            model_loaded = True
         except Exception as e:
             st.error(f"Error training model: {str(e)}")
             return
@@ -849,6 +985,154 @@ def main():
     with tab2:
         st.header('Model Performance')
         st.subheader(f"Model Version: {selected_version}")
+        
+        # Add retraining section with parameters
+        with st.expander("Retrain Model with Custom Parameters", expanded=False):
+            st.write("Adjust model parameters and click 'Retrain Model' to create a new version.")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                # XGBoost parameters
+                st.subheader("Model Parameters")
+                reg_lambda = st.slider("L2 Regularization (reg_lambda)", 0.01, 10.0, 1.0, 0.1, 
+                                    help="Higher values increase regularization strength to prevent overfitting")
+                n_estimators = st.slider("Number of Trees (n_estimators)", 50, 500, 100, 10, 
+                                        help="Number of boosting rounds/trees")
+                learning_rate = st.slider("Learning Rate", 0.01, 0.3, 0.1, 0.01, 
+                                        help="Step size for each boosting round")
+                max_depth = st.slider("Max Tree Depth", 3, 10, 5, 1, 
+                                    help="Maximum depth of each tree")
+            
+            with col2:
+                # Sample weight parameters
+                st.subheader("Sample Weight Configuration")
+                sw_enabled = st.checkbox("Enable Sample Weights", value=True, 
+                                        help="Give different weights to samples based on their target value")
+                if sw_enabled:
+                    sw_threshold = st.slider("Threshold", 0.1, 0.9, 0.5, 0.05, 
+                                            help="Samples with target above this threshold get higher weight")
+                    sw_weight_high = st.slider("High Weight", 1.1, 5.0, 2.0, 0.1, 
+                                            help="Weight for samples above threshold")
+                    sw_weight_low = st.slider("Low Weight", 0.5, 1.0, 1.0, 0.05, 
+                                            help="Weight for samples below threshold")
+                else:
+                    sw_threshold = 0.5
+                    sw_weight_high = 1.0
+                    sw_weight_low = 1.0
+            
+            # Version options
+            st.subheader("Version Control")
+            use_today_version = st.checkbox("Use today's date for version", value=True, 
+                                            help="Creates a version based on today's date (YY.MM.DD)")
+            if not use_today_version:
+                custom_version = st.text_input("Custom Version", value=selected_version, 
+                                            help="Specify a custom version number (e.g., '2.1.0')")
+            
+            # Retrain button
+            if st.button("Retrain Model"):
+                try:
+                    # Set version
+                    new_version = get_current_model_version() if use_today_version else custom_version
+                    
+                    # Show training status
+                    with st.spinner(f"Training model version {new_version}..."):
+                        # Configure parameters
+                        model_params = {
+                            'reg_lambda': reg_lambda,
+                            'n_estimators': n_estimators,
+                            'learning_rate': learning_rate,
+                            'max_depth': max_depth,
+                            'random_state': 42
+                        }
+                        
+                        # Configure sample weights
+                        if sw_enabled:
+                            sample_weight_config = {
+                                'threshold': sw_threshold,
+                                'weight_high': sw_weight_high,
+                                'weight_low': sw_weight_low
+                            }
+                            sample_weights = np.where(y_train > sw_threshold, sw_weight_high, sw_weight_low)
+                        else:
+                            sample_weight_config = None
+                            sample_weights = None
+                        
+                        # Train new model
+                        new_model = train_model_with_params(
+                            X_train, y_train, 
+                            params=model_params,
+                            sample_weight_config=sample_weight_config
+                        )
+                        
+                        # Save model
+                        new_model_file = get_model_filename(new_version)
+                        joblib.dump(new_model, new_model_file)
+                        
+                        # Evaluate new model
+                        test_metrics, y_pred_test = evaluate_model(new_model, X_test, y_test)
+                        
+                        # Save metadata
+                        metadata = {
+                            'version': new_version,
+                            'created_at': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            'feature_set': feature_set_key,
+                            'training_samples': X_train.shape[0],
+                            'test_samples': X_test.shape[0],
+                            'feature_names': X_train.columns.tolist(),
+                            'feature_count': X_train.shape[1],
+                            'include_preheader': include_preheader,
+                            'model_parameters': model_params,
+                            'sample_weights': sample_weight_config
+                        }
+                        save_model_metadata(metadata, new_version)
+                        
+                        # Generate documentation
+                        cv_results = cross_validate_model(
+                            X_train, y_train, 
+                            params=model_params,
+                            sample_weights=sample_weights
+                        )
+                        
+                        generate_model_documentation(
+                            new_model, feature_metadata, 
+                            {'train_samples': X_train.shape[0]},
+                            cv_results, test_metrics, 
+                            version=new_version
+                        )
+                        
+                        if hasattr(new_model, 'feature_names_'):
+                            generate_feature_importance_plot(new_model, new_model.feature_names_, version=new_version)
+                        else:
+                            generate_feature_importance_plot(new_model, features.columns, version=new_version)
+                            
+                        generate_prediction_vs_actual_plot(y_test, y_pred_test, version=new_version)
+                        generate_error_distribution_plot(y_test, y_pred_test, version=new_version)
+                        
+                        # Show success message with metrics
+                        st.success(f"Successfully trained and saved model version {new_version}")
+                        st.info(f"Test set R² score: {test_metrics['r2']:.4f}, RMSE: {test_metrics['rmse']:.6f}")
+                        st.info("Refresh the page to select the new model version")
+                        
+                except Exception as e:
+                    st.error(f"Error training model: {str(e)}")
+                    logger.error(f"Error training model: {str(e)}")
+                    logger.error(traceback.format_exc())
+        
+        # Model Parameter Information
+        if model_loaded:
+            with st.expander("Current Model Parameters", expanded=False):
+                metadata = load_model_metadata(selected_version)
+                if metadata and 'model_parameters' in metadata:
+                    params = metadata['model_parameters']
+                    st.json(params)
+                    
+                    if 'sample_weights' in metadata:
+                        st.subheader("Sample Weight Configuration")
+                        st.json(metadata['sample_weights'])
+                else:
+                    st.write("Model parameters not available in metadata.")
+                    st.write("Current XGBoost parameters:")
+                    st.write(model.get_params())
         
         # Cross-validation results
         st.subheader("Cross-Validation Performance (5-fold on Training Set)")
@@ -944,6 +1228,33 @@ def main():
                 st.write("Available documentation files:")
                 for file in doc_files:
                     st.write(f"- {file}")
+                    
+                # Add option to download documentation
+                doc_file = os.path.join(doc_path, "model_documentation.yaml")
+                if os.path.exists(doc_file):
+                    with open(doc_file, 'r') as f:
+                        doc_content = f.read()
+                    st.download_button(
+                        label="Download Model Documentation",
+                        data=doc_content,
+                        file_name=f"model_v{selected_version}_documentation.yaml",
+                        mime="text/yaml"
+                    )
+                    
+                # Display feature importance plot if available
+                importance_plot = os.path.join(doc_path, "feature_importance_plot.png")
+                pred_vs_actual_plot = os.path.join(doc_path, "prediction_vs_actual_plot.png")
+                
+                if os.path.exists(importance_plot) and os.path.exists(pred_vs_actual_plot):
+                    st.subheader("Saved Visualization")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        with open(importance_plot, "rb") as file:
+                            st.image(file.read(), caption="Saved Feature Importance")
+                        
+                    with col2:
+                        with open(pred_vs_actual_plot, "rb") as file:
+                            st.image(file.read(), caption="Saved Prediction vs Actual")
             else:
                 st.write("No documentation files found.")
         else:
@@ -1186,35 +1497,57 @@ def main():
                                             options.append((chr(65 + i), subject, preheader_alt, openrate))
                                     
                                     if options:
-                                        st.subheader("Alternative Subject Lines and Preheaders")
-                                        for opt, subject, preheader_alt, openrate in options:
-                                            st.write(f'**{opt}: Subject: "{subject}"'
-                                                     f'{", Preheader: \"" + preheader_alt + "\"" if float(selected_version.split(".")[0]) >= 2 else ""}'
-                                                     f'** - Predicted Results:')
-                                            
-                                            col1, col2, col3 = st.columns(3)
-                                            col1.metric("Open Rate", f"{openrate:.2%}", f"{openrate - openrate_A:.2%}")
-                                            col2.metric("Click Rate", f"{avg_clickrate:.2%}")
-                                            col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
+                                        # Add current option as Version A
+                                        all_options = [('A', subject_line, preheader, openrate_A)] + [(chr(66 + i), s, p, o) for i, (_, s, p, o) in enumerate(options)]
                                         
-                                        all_options = [('Current', subject_line, preheader, openrate_A)] + options
+                                        st.subheader("A/B/C/D Test Results")
+                                        
+                                        # Create a container with a light background for all versions
+                                        results_container = st.container()
+                                        with results_container:
+                                            # Display each version in its own box
+                                            for opt, subject, preheader_text, openrate in all_options:
+                                                # Create a container with border for each version
+                                                with st.expander(f"**Version {opt}**", expanded=True):
+                                                    is_current = opt == 'A'
+                                                    is_best = openrate == max(o for _, _, _, o in all_options)
+                                                    
+                                                    # Add a "Current" or "Best" badge if applicable
+                                                    badges = []
+                                                    if is_current:
+                                                        badges.append("🔹 Current")
+                                                    if is_best:
+                                                        badges.append("⭐ Best")
+                                                    
+                                                    if badges:
+                                                        st.markdown(f"<div style='margin-bottom:10px'>{' | '.join(badges)}</div>", unsafe_allow_html=True)
+                                                    
+                                                    # Subject and preheader
+                                                    st.markdown("**Subject:**")
+                                                    st.markdown(f"<div style='background-color:rgb(133, 133, 133);padding:10px;border-radius:5px;margin-bottom:10px'>{subject}</div>", unsafe_allow_html=True)
+                                                    
+                                                    if float(selected_version.split('.')[0]) >= 2:
+                                                        st.markdown("**Preheader:**")
+                                                        st.markdown(f"<div style='background-color:rgb(133, 133, 133);padding:10px;border-radius:5px;margin-bottom:10px'>{preheader_text}</div>", unsafe_allow_html=True)
+                                                    
+                                                    # Metrics
+                                                    st.markdown("**Predicted Results:**")
+                                                    col1, col2, col3 = st.columns(3)
+                                                    delta = None if is_current else openrate - openrate_A
+                                                    col1.metric("Open Rate", f"{openrate:.2%}", f"{delta:.2%}" if delta is not None else None)
+                                                    col2.metric("Click Rate", f"{avg_clickrate:.2%}")
+                                                    col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
+                                        
+                                        # Find the best option
                                         best_option = max(all_options, key=lambda x: x[3])
                                         
-                                        st.subheader("Best Option")
-                                        if best_option[0] == 'Current':
-                                            st.write(f'**Current: Subject: "{best_option[1]}"'
-                                                     f'{", Preheader: \"" + best_option[2] + "\"" if float(selected_version.split(".")[0]) >= 2 else ""}'
-                                                     f'**')
-                                        else:
-                                            st.write(f'**{best_option[0]}: Subject: "{best_option[1]}"'
-                                                     f'{", Preheader: \"" + best_option[2] + "\"" if float(selected_version.split(".")[0]) >= 2 else ""}'
-                                                     f'**')
+                                        # Summary section
+                                        st.subheader("Summary")
+                                        st.write(f"Best performing version: **Version {best_option[0]}** with {best_option[3]:.2%} predicted open rate")
                                         
-                                        col1, col2, col3 = st.columns(3)
-                                        col1.metric("Open Rate", f"{best_option[3]:.2%}", 
-                                                    f"{best_option[3] - openrate_A:.2%}" if best_option[0] != 'Current' else None)
-                                        col2.metric("Click Rate", f"{avg_clickrate:.2%}")
-                                        col3.metric("Opt-out Rate", f"{avg_optoutrate:.2%}")
+                                        if best_option[0] != 'A':
+                                            improvement = best_option[3] - openrate_A
+                                            st.write(f"Improvement over current version: **{improvement:.2%}**")
                                     else:
                                         st.warning("No valid alternatives generated.")
                                 except Exception as e:

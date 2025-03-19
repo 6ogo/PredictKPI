@@ -178,3 +178,5 @@ Grok/xgboost_model.pkl
 *.pkl
 /Grok/Docs
 Grok/models/xgboost_model_v2.0.0_metadata.yaml
+/Grok/models
+Grok/xgboost_model.pkl
