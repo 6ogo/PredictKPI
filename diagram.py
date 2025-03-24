@@ -8,7 +8,7 @@ from diagrams.aws.integration import SQS
 from diagrams.aws.storage import S3
 from diagrams.aws.management import Cloudwatch
 
-with Diagram("Multi-KPI Email Campaign Optimizer", show=True):
+with Diagram("Email KPI Optimizer", show=True):
     with Cluster("Data Management Layer"):
         data_loader = EC2("Data Loader")
         data_preprocessor = EC2("Data Preprocessor")
