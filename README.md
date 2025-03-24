@@ -80,7 +80,7 @@ PredictKPI/
 │   ├── customer_data.csv      # Customer-level data
 │   ├── delivery_data.csv      # Delivery-level data
 │   └── example_*.csv          # Example data files
-├── Grok/
+├── app/
 │   ├── app.py                 # Main Streamlit application
 │   ├── requirements.txt       # Python dependencies
 │   ├── models/                # Saved model files
