@@ -112,30 +112,36 @@ def get_current_model_version() -> str:
     today = datetime.datetime.now()
     return f"{today.strftime('%y.%m.%d')}"
 
-def get_model_filename(version: str = None) -> str:
+def get_model_directory(version: str = None) -> str:
     """
-    Generate model filename based on version
-    """
-    if version is None:
-        version = get_current_model_version()
-    return os.path.join(MODEL_BASE_DIR, f"xgboost_model_v{version}.pkl")
-
-def get_model_metadata_filename(version: str = None) -> str:
-    """
-    Generate metadata filename based on version
+    Get the directory for storing models of a specific version
     """
     if version is None:
         version = get_current_model_version()
-    return os.path.join(MODEL_BASE_DIR, f"xgboost_model_v{version}_metadata.yaml")
+    model_dir = os.path.join(MODEL_BASE_DIR, f"v{version}")
+    os.makedirs(model_dir, exist_ok=True)
+    return model_dir
 
-def save_model_metadata(metadata: Dict[str, Any], version: str = None) -> None:
+def get_model_filename(kpi_type: str, version: str = None) -> str:
+    """
+    Generate model filename based on version and KPI type
+    """
+    model_dir = get_model_directory(version)
+    return os.path.join(model_dir, f"{kpi_type}_model.pkl")
+
+def get_model_metadata_filename(kpi_type: str, version: str = None) -> str:
+    """
+    Generate metadata filename based on version and KPI type
+    """
+    model_dir = get_model_directory(version)
+    return os.path.join(model_dir, f"{kpi_type}_metadata.yaml")
+
+def save_model_metadata(metadata: Dict[str, Any], kpi_type: str, version: str = None) -> None:
     """
     Save model metadata to a YAML file
     """
     try:
-        if version is None:
-            version = get_current_model_version()
-        metadata_file = get_model_metadata_filename(version)
+        metadata_file = get_model_metadata_filename(kpi_type, version)
         with open(metadata_file, 'w') as f:
             yaml.dump(metadata, f)
         logger.info(f"Model metadata saved to {metadata_file}")
@@ -143,14 +149,12 @@ def save_model_metadata(metadata: Dict[str, Any], version: str = None) -> None:
         logger.error(f"Error saving model metadata: {str(e)}")
         logger.error(traceback.format_exc())
 
-def load_model_metadata(version: str = None) -> Optional[Dict[str, Any]]:
+def load_model_metadata(kpi_type: str, version: str = None) -> Optional[Dict[str, Any]]:
     """
     Load model metadata from a YAML file
     """
     try:
-        if version is None:
-            version = get_current_model_version()
-        metadata_file = get_model_metadata_filename(version)
+        metadata_file = get_model_metadata_filename(kpi_type, version)
         if os.path.exists(metadata_file):
             with open(metadata_file, 'r') as f:
                 metadata = yaml.safe_load(f)
@@ -163,19 +167,49 @@ def load_model_metadata(version: str = None) -> Optional[Dict[str, Any]]:
         logger.error(traceback.format_exc())
         return None
 
-def list_available_models() -> List[str]:
+def list_available_model_versions() -> List[str]:
     """
     List all available model versions
     """
     try:
-        model_files = [f for f in os.listdir(MODEL_BASE_DIR) if f.startswith('xgboost_model_v') and f.endswith('.pkl')]
-        versions = [f.split('_v')[1].replace('.pkl', '') for f in model_files]
+        model_dirs = [d for d in os.listdir(MODEL_BASE_DIR) if os.path.isdir(os.path.join(MODEL_BASE_DIR, d)) and d.startswith('v')]
+        versions = [d[1:] for d in model_dirs]  # Remove the 'v' prefix
         versions.sort(key=lambda s: [int(u) for u in s.split('.')])
         return versions
     except Exception as e:
-        logger.error(f"Error listing available models: {str(e)}")
+        logger.error(f"Error listing available model versions: {str(e)}")
         logger.error(traceback.format_exc())
         return []
+
+def get_available_kpi_models(version: str = None) -> Dict[str, List[str]]:
+    """
+    Get available KPI models for a specific version
+    
+    Returns:
+    --------
+    Dict[str, List[str]]
+        Dictionary mapping version to list of available KPI types
+    """
+    try:
+        result = {}
+        
+        if version:
+            versions = [version]
+        else:
+            versions = list_available_model_versions()
+            
+        for ver in versions:
+            model_dir = get_model_directory(ver)
+            if os.path.exists(model_dir):
+                model_files = [f for f in os.listdir(model_dir) if f.endswith('_model.pkl')]
+                kpi_types = [f.split('_model.pkl')[0] for f in model_files]
+                result[ver] = kpi_types
+                
+        return result
+    except Exception as e:
+        logger.error(f"Error getting available KPI models: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {}
 
 # --- Age Group Utils ---
 def categorize_age(age: int) -> str:
@@ -204,12 +238,30 @@ def categorize_age(age: int) -> str:
         return 'Other'
 
 # --- API Interaction ---
-def send_to_groq_api(subject_line: str, preheader: str, openrate_A: float,
-                     selected_dialog: str, selected_syfte: str, selected_product: str,
-                     min_age: int, max_age: int, included_bolag: List[str],
-                     api_key: str = None) -> Dict[str, Any]:
+def send_to_groq_api(subject_line: str, preheader: str, 
+                    kpi_predictions: Dict[str, float],
+                    campaign_metadata: Dict[str, Any],
+                    api_key: str = None) -> Dict[str, Any]:
     """
     Send data to Groq API for subject line and preheader suggestions
+    
+    Parameters:
+    -----------
+    subject_line : str
+        Current subject line
+    preheader : str
+        Current preheader
+    kpi_predictions : Dict[str, float]
+        Dictionary of KPI predictions for current content
+    campaign_metadata : Dict[str, Any]
+        Dictionary of campaign metadata
+    api_key : str, optional
+        Groq API key
+        
+    Returns:
+    --------
+    Dict[str, Any]
+        API response with suggestions
     """
     try:
         if api_key is None:
@@ -219,21 +271,45 @@ def send_to_groq_api(subject_line: str, preheader: str, openrate_A: float,
         if not api_key:
             return {"error": "Groq API key not found. Please set GROQ_API_KEY in .env file."}
         
+        # Extract KPI predictions
+        openrate = kpi_predictions.get('openrate', 0)
+        clickrate = kpi_predictions.get('clickrate', 0)
+        optoutrate = kpi_predictions.get('optoutrate', 0)
+        
+        # Extract campaign metadata
+        dialog = campaign_metadata.get('dialog_display', '')
+        syfte = campaign_metadata.get('syfte_display', '')
+        product = campaign_metadata.get('product_display', '')
+        min_age = campaign_metadata.get('min_age', 18)
+        max_age = campaign_metadata.get('max_age', 100)
+        included_bolag = campaign_metadata.get('included_bolag', [])
+        
         prompt = f"""
         I need to create email subject lines and preheaders for a marketing campaign. 
         
         Current subject line: "{subject_line}"
         Current preheader: "{preheader}"
-        Predicted open rate: {openrate_A:.2%}
+        Current predicted metrics:
+        - Open rate: {openrate:.2%}
+        - Click rate: {clickrate:.2%}
+        - Opt-out rate: {optoutrate:.2%}
         
         Campaign details:
-        - Dialog: {selected_dialog}
-        - Syfte (Purpose): {selected_syfte}
-        - Product: {selected_product}
+        - Dialog: {dialog}
+        - Syfte (Purpose): {syfte}
+        - Product: {product}
         - Age range: {min_age} to {max_age}
-        - Target regions: {', '.join(included_bolag)}
+        - Target regions: {', '.join(included_bolag) if included_bolag else 'All regions'}
         
-        Please generate THREE alternative email subject lines and preheaders in Swedish that could improve the open rate.
+        Please generate THREE alternative email subject lines and preheaders in Swedish that could improve all metrics (higher open and click rates, lower opt-out rate).
+        
+        Consider these patterns that work well:
+        - Clear value proposition
+        - Personalization when relevant
+        - Avoiding clickbait or urgent language that might increase opt-outs
+        - Keeping subject lines between 30-60 characters
+        - Making preheaders complementary to subjects, not repetitive
+        
         Return your response as a JSON object with a 'suggestions' field containing an array of objects, each with 'subject' and 'preheader' fields, like this:
         {{
             "suggestions": [
@@ -253,7 +329,7 @@ def send_to_groq_api(subject_line: str, preheader: str, openrate_A: float,
             json={
                 "model": "llama3-70b-8192",
                 "messages": [
-                    {"role": "system", "content": "You are an expert in email marketing optimization. Your task is to generate compelling email subject lines and preheaders in Swedish that maximize open rates."},
+                    {"role": "system", "content": "You are an expert in email marketing optimization. Your task is to generate compelling email subject lines and preheaders in Swedish that maximize open rates and click-through rates while minimizing opt-outs."},
                     {"role": "user", "content": prompt}
                 ],
                 "temperature": 0.7,
@@ -282,6 +358,71 @@ def send_to_groq_api(subject_line: str, preheader: str, openrate_A: float,
         logger.error(f"Error sending to Groq API: {str(e)}")
         logger.error(traceback.format_exc())
         return {"error": f"An unexpected error occurred: {str(e)}"}
+
+# --- Data Loading ---
+def load_and_prepare_data(delivery_file='Data/delivery_data.csv', customer_file='Data/customer_data.csv') -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Load and prepare data from CSV files
+    
+    Parameters:
+    -----------
+    delivery_file : str
+        Path to delivery data CSV file
+    customer_file : str
+        Path to customer data CSV file
+        
+    Returns:
+    --------
+    Tuple[pd.DataFrame, pd.DataFrame]
+        Prepared delivery data and customer data
+    """
+    try:
+        logger.info(f"Loading data from {delivery_file} and {customer_file}")
+        
+        # Load data
+        delivery_data = pd.read_csv(delivery_file, sep=';', encoding='utf-8')
+        customer_data = pd.read_csv(customer_file, sep=';', encoding='utf-8')
+        
+        # Validate required columns
+        delivery_required_cols = ['InternalName', 'Subject', 'Preheader', 'Date', 'Sendouts', 'Opens', 'Clicks', 'Optouts', 'Dialog', 'Syfte', 'Product']
+        customer_required_cols = ['Primary key', 'InternalName', 'OptOut', 'Open', 'Click', 'Gender', 'Age', 'Bolag']
+        
+        delivery_missing = [col for col in delivery_required_cols if col not in delivery_data.columns]
+        customer_missing = [col for col in customer_required_cols if col not in customer_data.columns]
+        
+        if delivery_missing:
+            logger.warning(f"Missing delivery columns: {delivery_missing}")
+        
+        if customer_missing:
+            logger.warning(f"Missing customer columns: {customer_missing}")
+        
+        # Calculate KPIs
+        delivery_data['Openrate'] = delivery_data['Opens'] / delivery_data['Sendouts']
+        delivery_data['Clickrate'] = delivery_data['Clicks'] / delivery_data['Sendouts']
+        delivery_data['Optoutrate'] = delivery_data['Optouts'] / delivery_data['Sendouts']
+        
+        # Fix data types
+        if 'Date' in delivery_data.columns:
+            delivery_data['Date'] = pd.to_datetime(delivery_data['Date'], errors='coerce')
+            
+        if 'Age' in customer_data.columns:
+            customer_data['Age'] = pd.to_numeric(customer_data['Age'], errors='coerce')
+            
+        # Fill missing values
+        for col in ['Subject', 'Preheader']:
+            if col in delivery_data.columns:
+                delivery_data[col] = delivery_data[col].fillna('')
+        
+        for col in ['OptOut', 'Open', 'Click']:
+            if col in customer_data.columns:
+                customer_data[col] = customer_data[col].fillna(0).astype(int)
+        
+        return delivery_data, customer_data
+        
+    except Exception as e:
+        logger.error(f"Error loading data: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
 
 # --- CSV Import/Export ---
 def import_subjects_from_csv(file) -> pd.DataFrame:
@@ -333,8 +474,10 @@ def export_results_to_csv(results: pd.DataFrame) -> str:
         export_df = results.copy()
         
         # Format rates as percentages for display
-        if 'Predicted_Openrate' in export_df.columns:
-            export_df['Predicted_Openrate_Pct'] = export_df['Predicted_Openrate'].map(lambda x: f"{x:.2%}" if pd.notnull(x) else "")
+        rate_columns = ['Predicted_Openrate', 'Predicted_Clickrate', 'Predicted_Optoutrate']
+        for col in rate_columns:
+            if col in export_df.columns:
+                export_df[f"{col}_Pct"] = export_df[col].map(lambda x: f"{x:.2%}" if pd.notnull(x) else "")
         
         # Convert to CSV
         import io
@@ -346,124 +489,3 @@ def export_results_to_csv(results: pd.DataFrame) -> str:
     except Exception as e:
         logger.error(f"Error exporting to CSV: {str(e)}")
         raise
-
-# --- Batch Prediction ---
-def batch_predict(model, subjects: List[str], preheaders: List[str] = None, dialog: str = None, 
-                  syfte: str = None, product: str = None, min_age: int = 18, max_age: int = 100, 
-                  bolag: List[str] = None, include_preheader: bool = True) -> pd.DataFrame:
-    """
-    Perform batch prediction on multiple subject lines
-    """
-    # Validate inputs
-    n_subjects = len(subjects)
-    
-    if preheaders is None:
-        preheaders = [''] * n_subjects
-    elif len(preheaders) != n_subjects:
-        raise ValueError("Number of preheaders must match number of subjects")
-    
-    # Create batch data
-    batch_data = pd.DataFrame({
-        'Subject': subjects,
-        'Preheader': preheaders,
-        'Dialog': dialog or 'DEFAULT',
-        'Syfte': syfte or 'DEFAULT',
-        'Product': product or 'DEFAULT',
-        'Min_age': min_age,
-        'Max_age': max_age
-    })
-    
-    # Create prediction features for each row
-    predictions = []
-    
-    for idx, row in batch_data.iterrows():
-        # Basic features
-        features = {}
-        
-        # Subject features (both legacy and v2)
-        subject = row['Subject']
-        features['Subject_length'] = len(subject)
-        features['Num_words'] = len(subject.split())
-        features['Has_exclamation'] = 1 if '!' in subject else 0
-        features['Has_question'] = 1 if '?' in subject else 0
-        
-        # v2 subject features
-        features['Subject_num_words'] = len(subject.split())
-        features['Subject_has_exclamation'] = 1 if '!' in subject else 0
-        features['Subject_has_question'] = 1 if '?' in subject else 0
-        features['Subject_caps_ratio'] = sum(1 for c in str(subject) if c.isupper()) / len(str(subject)) if len(str(subject)) > 0 else 0
-        features['Subject_avg_word_len'] = np.mean([len(w) for w in str(subject).split()]) if len(str(subject).split()) > 0 else 0
-        features['Subject_num_special_chars'] = sum(1 for c in str(subject) if c in '!?%$€£#@*&')
-        features['Subject_first_word_len'] = len(str(subject).split()[0]) if len(str(subject).split()) > 0 else 0
-        features['Subject_last_word_len'] = len(str(subject).split()[-1]) if len(str(subject).split()) > 0 else 0
-        
-        # Preheader features (v2 only)
-        if include_preheader:
-            preheader = row['Preheader']
-            features['Preheader_length'] = len(preheader)
-            features['Preheader_num_words'] = len(preheader.split())
-            features['Preheader_has_exclamation'] = 1 if '!' in preheader else 0
-            features['Preheader_has_question'] = 1 if '?' in preheader else 0
-            features['Preheader_caps_ratio'] = sum(1 for c in str(preheader) if c.isupper()) / len(str(preheader)) if len(str(preheader)) > 0 else 0
-            features['Preheader_avg_word_len'] = np.mean([len(w) for w in str(preheader).split()]) if len(str(preheader).split()) > 0 else 0
-            features['Preheader_num_special_chars'] = sum(1 for c in str(preheader) if c in '!?%$€£#@*&')
-            
-            # Relationship features
-            preheader_len = len(preheader) if len(preheader) > 0 else 1
-            preheader_words = len(preheader.split()) if len(preheader.split()) > 0 else 1
-            features['Subject_preheader_length_ratio'] = len(subject) / preheader_len
-            features['Subject_preheader_words_ratio'] = len(subject.split()) / preheader_words
-        
-        # Age features
-        features['Min_age'] = row['Min_age']
-        features['Max_age'] = row['Max_age']
-        
-        # Try to predict
-        try:
-            # Check if model has feature information
-            if hasattr(model, 'feature_names_'):
-                # Create a DataFrame with all columns from the model
-                input_data = pd.DataFrame(columns=model.feature_names_)
-                input_data.loc[0] = 0
-                
-                # Set known features
-                for feat_name, feat_value in features.items():
-                    if feat_name in input_data.columns:
-                        input_data[feat_name] = feat_value
-                
-                # Try to set categorical features
-                dialog_col = f"Dialog_{row['Dialog']}"
-                syfte_col = f"Syfte_{row['Syfte']}"
-                product_col = f"Product_{row['Product']}"
-                
-                if dialog_col in input_data.columns:
-                    input_data[dialog_col] = 1
-                if syfte_col in input_data.columns:
-                    input_data[syfte_col] = 1
-                if product_col in input_data.columns:
-                    input_data[product_col] = 1
-                
-                # Set bolag features if provided
-                if bolag:
-                    for b in bolag:
-                        bolag_col = f'Bolag_{b}'
-                        if bolag_col in input_data.columns:
-                            input_data[bolag_col] = 1
-                
-                # Make prediction
-                pred = model.predict(input_data)[0]
-            else:
-                # Model doesn't have feature information, so we can't predict accurately
-                logger.warning("Model doesn't have feature_names_. Using simplified prediction.")
-                pred = 0.5  # Default prediction
-            
-            predictions.append(pred)
-            
-        except Exception as e:
-            logger.error(f"Error predicting for row {idx}: {str(e)}")
-            predictions.append(None)
-    
-    # Add predictions to batch data
-    batch_data['Predicted_Openrate'] = predictions
-    
-    return batch_data
