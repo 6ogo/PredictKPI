@@ -14,6 +14,8 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, r
 from sklearn.base import BaseEstimator
 
 from utils import logger, get_model_directory, save_model_metadata, load_model_metadata
+# Fix the import error by importing from enhanced_features instead of features
+from enhanced_features import create_campaign_level_features
 
 
 class MultiKpiModelManager:
@@ -249,7 +251,8 @@ class MultiKpiModelManager:
         Dict[str, float]
             Dictionary of predicted KPIs
         """
-        from features import create_campaign_level_features
+        # Import create_campaign_level_features from enhanced_features
+        from enhanced_features import create_campaign_level_features
         
         # Create features for new campaign
         features_dict = create_campaign_level_features(

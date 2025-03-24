@@ -79,7 +79,7 @@ def create_enhanced_input_ui():
         
         with col1:
             use_genai = st.checkbox('Generate alternatives with AI', value=True)
-            use_formatting = st.checkbox('Format suggestions with emojis', value=True,
+            use_formatting = st.checkbox('Format suggestions with emojis', value=False,
                                        help="Add relevant emojis to the generated subject lines")
         
         with col2:
