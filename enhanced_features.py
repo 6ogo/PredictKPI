@@ -30,6 +30,11 @@ def prepare_multi_kpi_features(delivery_data: pd.DataFrame, customer_data: pd.Da
     try:
         logger.info("Preparing features for multiple KPI prediction")
         
+        # Ensure Preheader column exists
+        if 'Preheader' not in delivery_data.columns:
+            logger.warning("Preheader column not found in delivery data. Adding empty column.")
+            delivery_data['Preheader'] = ''
+        
         # Calculate KPIs
         delivery_data['Openrate'] = delivery_data['Opens'] / delivery_data['Sendouts']
         delivery_data['Clickrate'] = delivery_data['Clicks'] / delivery_data['Sendouts']
@@ -73,13 +78,20 @@ def engineer_openrate_features(delivery_data: pd.DataFrame, customer_data: pd.Da
         # Add open rate specific features
         
         # 1. Subject line specifics highly relevant for opens
-        features['Subject_first_word_is_question'] = delivery_data['Subject'].str.split().str[0].str.contains('\?').fillna(False).astype(int)
-        features['Subject_contains_number'] = delivery_data['Subject'].str.contains('\d').fillna(False).astype(int)
+        features['Subject_first_word_is_question'] = delivery_data['Subject'].str.split().str[0].str.contains(r'\?').fillna(False).astype(int)
+        features['Subject_contains_number'] = delivery_data['Subject'].str.contains(r'\d').fillna(False).astype(int)
         features['Subject_contains_personalization'] = delivery_data['Subject'].str.contains('{{').fillna(False).astype(int)
         
-        # 2. Preheader characteristics
-        features['Preheader_complements_subject'] = ((~delivery_data['Subject'].str.contains(delivery_data['Preheader'].str[:20], na=False)) & 
-                                                   (delivery_data['Preheader'].str.len() > 10)).astype(int)
+        # 2. Preheader characteristics - Fix the problematic line
+        # Create a function to check if preheader complements subject
+        def preheader_complements_subject(row):
+            if pd.isna(row['Subject']) or pd.isna(row['Preheader']) or not row['Preheader']:
+                return 0
+            preheader_start = row['Preheader'][:20] if len(row['Preheader']) >= 20 else row['Preheader']
+            return 1 if preheader_start not in row['Subject'] and len(row['Preheader']) > 10 else 0
+        
+        # Apply the function to each row
+        features['Preheader_complements_subject'] = delivery_data.apply(preheader_complements_subject, axis=1)
         
         # 3. Time-based features
         if 'Date' in delivery_data.columns:
@@ -92,6 +104,15 @@ def engineer_openrate_features(delivery_data: pd.DataFrame, customer_data: pd.Da
             features['Send_morning'] = (delivery_data['Date'].dt.hour.between(6, 11)).astype(int)
             features['Send_afternoon'] = (delivery_data['Date'].dt.hour.between(12, 17)).astype(int)
             features['Send_evening'] = (delivery_data['Date'].dt.hour.between(18, 23)).astype(int)
+        else:
+            # Handle the case when Date column is missing
+            logger.warning("Date column missing, skipping time-based features")
+            features['Send_hour'] = 0
+            features['Send_day_of_week'] = 0
+            features['Is_weekend'] = 0
+            features['Send_morning'] = 0
+            features['Send_afternoon'] = 0
+            features['Send_evening'] = 0
         
         # Return features and target
         return features, delivery_data['Openrate']
@@ -295,7 +316,7 @@ def vectorized_subject_features(texts):
     length = texts.str.len()
     num_words = texts.str.split().str.len()
     has_exclamation = texts.str.contains('!').astype(int)
-    has_question = texts.str.contains(r'\?', regex=True).astype(int)
+    has_question = texts.str.contains(r'\?', regex=True).astype(int)  # Fixed escape sequence
     
     # Advanced features (vectorized)
     upper_counts = texts.apply(lambda x: sum(1 for c in x if c.isupper()))
@@ -420,10 +441,10 @@ def create_campaign_level_features(subject: str, preheader: str, campaign_metada
         
         # Openrate features
         openrate_features = features.copy()
-        openrate_features['Subject_first_word_is_question'] = 1 if subject.split()[0].endswith('?') else 0
+        openrate_features['Subject_first_word_is_question'] = 1 if subject.split() and subject.split()[0].endswith('?') else 0
         openrate_features['Subject_contains_number'] = 1 if any(c.isdigit() for c in subject) else 0
         openrate_features['Subject_contains_personalization'] = 1 if '{{' in subject else 0
-        openrate_features['Preheader_complements_subject'] = 1 if preheader and preheader[:20] not in subject else 0
+        openrate_features['Preheader_complements_subject'] = 1 if preheader and preheader[:20] not in subject and len(preheader) > 10 else 0
         
         # Clickrate features
         clickrate_features = features.copy()

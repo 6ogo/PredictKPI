@@ -392,9 +392,31 @@ def load_and_prepare_data(delivery_file='Data/delivery_data.csv', customer_file=
         
         if delivery_missing:
             logger.warning(f"Missing delivery columns: {delivery_missing}")
+            
+            # Add missing columns with default values
+            for col in delivery_missing:
+                if col == 'Date':
+                    delivery_data[col] = pd.Timestamp('now')
+                elif col == 'Preheader':
+                    delivery_data[col] = ''
+                else:
+                    delivery_data[col] = np.nan
         
         if customer_missing:
             logger.warning(f"Missing customer columns: {customer_missing}")
+            
+            # Add missing columns with default values
+            for col in customer_missing:
+                if col in ['OptOut', 'Open', 'Click']:
+                    customer_data[col] = 0
+                elif col == 'Age':
+                    customer_data[col] = 30  # Default age
+                elif col == 'Gender':
+                    customer_data[col] = 'Unknown'
+                elif col == 'Bolag':
+                    customer_data[col] = 'Unknown'
+                else:
+                    customer_data[col] = np.nan
         
         # Calculate KPIs
         delivery_data['Openrate'] = delivery_data['Opens'] / delivery_data['Sendouts']
@@ -423,7 +445,7 @@ def load_and_prepare_data(delivery_file='Data/delivery_data.csv', customer_file=
         logger.error(f"Error loading data: {str(e)}")
         logger.error(traceback.format_exc())
         raise
-
+    
 # --- CSV Import/Export ---
 def import_subjects_from_csv(file) -> pd.DataFrame:
     """
