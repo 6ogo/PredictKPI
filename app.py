@@ -7,7 +7,11 @@ from datetime import datetime
 import re
 import os
 import pickle
-from sklearn.model_selection import train_test_split, GridSearchCV
+import json
+import requests
+from dotenv import load_dotenv
+import plotly.graph_objects as go
+from sklearn.model_selection import train_test_split, GridSearchCV, KFold
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
@@ -15,6 +19,10 @@ from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Load environment variables for API key
+load_dotenv()
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 
 # Define the enum values
 BOLAG_VALUES = {
@@ -97,12 +105,37 @@ PRODUKT_CODE_TO_VALUE = {code: key for key, vals in PRODUKT_VALUES.items() for c
 def load_data():
     """Load delivery and customer data from CSV files."""
     try:
-        delivery_df = pd.read_csv("data/delivery_data.csv")
-        customer_df = pd.read_csv("data/customer_data.csv")
+        delivery_df = pd.read_csv("./data/delivery_data.csv", encoding='utf-8', sep=';')
+        customer_df = pd.read_csv("./data/customer_data.csv", encoding='utf-8', sep=';')
         return delivery_df, customer_df
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return None, None
+        
+def categorize_age(age):
+    """
+    Categorize age into predefined age groups
+    """
+    if 18 <= age <= 24:
+        return '18-24'
+    elif 25 <= age <= 29:
+        return '25-29'
+    elif 30 <= age <= 39:
+        return '30-39'
+    elif 40 <= age <= 49:
+        return '40-49'
+    elif 50 <= age <= 59:
+        return '50-59'
+    elif 60 <= age <= 69:
+        return '60-69'
+    elif 70 <= age <= 79:
+        return '70-79'
+    elif 80 <= age <= 89:
+        return '80-89'
+    elif 90 <= age <= 100:
+        return '90-100'
+    else:
+        return 'Other'
 
 def preprocess_data(delivery_df, customer_df):
     """Preprocess and merge the delivery and customer data."""
@@ -111,6 +144,10 @@ def preprocess_data(delivery_df, customer_df):
     
     # Clean delivery data
     delivery_df = delivery_df.copy()
+    
+    # Define age bins for consistent use throughout the app
+    AGE_BINS = [0, 25, 35, 45, 55, 65, 100]
+    AGE_LABELS = ['0-25', '26-35', '36-45', '46-55', '56-65', '65+']
     
     # Convert Date to datetime
     delivery_df['Date'] = pd.to_datetime(delivery_df['Date'])
@@ -218,13 +255,19 @@ def extract_text_features(df, text_col):
     
     return features, vectorizer
 
-def train_model(X, y, model_type='gradient_boosting'):
+def train_model(X, y, model_type='gradient_boosting', sample_weight=None):
     """Train a regression model for predicting rates."""
     if X is None or y is None:
         return None
     
     # Split the data
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Use sample weights if provided
+    if sample_weight is not None:
+        train_weight = sample_weight.iloc[X_train.index]
+    else:
+        train_weight = None
     
     # Choose the model
     if model_type == 'random_forest':
@@ -235,7 +278,7 @@ def train_model(X, y, model_type='gradient_boosting'):
         model = Ridge(alpha=1.0)
     
     # Train the model
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=train_weight)
     
     # Evaluate the model
     train_preds = model.predict(X_train)
@@ -252,6 +295,73 @@ def train_model(X, y, model_type='gradient_boosting'):
     
     return model, metrics, X_test, y_test, test_preds
 
+def cross_validate_model(X, y, model_type='gradient_boosting', n_splits=5, sample_weight=None):
+    """Perform cross-validation for model evaluation."""
+    if X is None or y is None:
+        return None
+    
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    
+    cv_mse = []
+    cv_rmse = []
+    cv_mae = []
+    cv_r2 = []
+    
+    # Choose the model
+    if model_type == 'random_forest':
+        model_cls = RandomForestRegressor(n_estimators=100, random_state=42)
+    elif model_type == 'gradient_boosting':
+        model_cls = GradientBoostingRegressor(n_estimators=100, random_state=42)
+    else:  # Default to Ridge regression
+        model_cls = Ridge(alpha=1.0)
+    
+    for train_idx, val_idx in kf.split(X):
+        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+        
+        # Apply sample weights if provided
+        if sample_weight is not None:
+            train_weight = sample_weight.iloc[train_idx]
+        else:
+            train_weight = None
+            
+        # Train the model
+        model = model_cls
+        model.fit(X_train, y_train, sample_weight=train_weight)
+        
+        # Evaluate
+        y_pred = model.predict(X_val)
+        
+        cv_mse.append(mean_squared_error(y_val, y_pred))
+        cv_rmse.append(np.sqrt(mean_squared_error(y_val, y_pred)))
+        cv_mae.append(mean_absolute_error(y_val, y_pred))
+        cv_r2.append(r2_score(y_val, y_pred))
+    
+    cv_results = {
+        'mse': {
+            'scores': cv_mse,
+            'mean': np.mean(cv_mse),
+            'std': np.std(cv_mse)
+        },
+        'rmse': {
+            'scores': cv_rmse,
+            'mean': np.mean(cv_rmse),
+            'std': np.std(cv_rmse)
+        },
+        'mae': {
+            'scores': cv_mae,
+            'mean': np.mean(cv_mae),
+            'std': np.std(cv_mae)
+        },
+        'r2': {
+            'scores': cv_r2,
+            'mean': np.mean(cv_r2),
+            'std': np.std(cv_r2)
+        }
+    }
+    
+    return cv_results
+
 def prepare_features(df, text_vectorizers=None):
     """Prepare features for model training and prediction."""
     if df is None:
@@ -260,7 +370,13 @@ def prepare_features(df, text_vectorizers=None):
     # Define categorical and numerical features
     categorical_features = ['Dialog', 'Syfte', 'Produkt', 'MostCommonGender', 'MostCommonBolag', 
                            'Year', 'Month', 'DayOfWeek']
-    numerical_features = ['Hour', 'SubjectLength', 'PreheaderLength', 'AverageAge', 'UniqueCustomers']
+    
+    # Check if 'AgeBin' column exists, if so use it instead of 'AverageAge'
+    if 'AgeBin' in df.columns:
+        categorical_features.append('AgeBin')
+        numerical_features = ['Hour', 'SubjectLength', 'PreheaderLength', 'UniqueCustomers']
+    else:
+        numerical_features = ['Hour', 'SubjectLength', 'PreheaderLength', 'AverageAge', 'UniqueCustomers']
     
     # Prepare categorical features
     categorical_df = df[categorical_features].copy()
@@ -316,8 +432,337 @@ def load_model(filename):
         return None
 
 # Main Streamlit app
+def process_data_for_age_heatmap(df, customer_data):
+    """
+    Process data for age group heatmap visualization
+    """
+    try:
+        # Add age group to customer data
+        customer_data = customer_data.copy()
+        customer_data['AgeGroup'] = customer_data['Age'].apply(categorize_age)
+        
+        # Merge customer data with delivery data
+        merged_data = df.merge(customer_data, on='InternalName', how='left')
+        
+        # Ensure we have all age groups (even if zero data)
+        all_age_groups = ['18-24', '25-29', '30-39', '40-49', '50-59', '60-69', '70-79', '80-89', '90-100']
+        
+        # Calculate rates by age group
+        results = []
+        
+        # Create dictionaries to store aggregated results
+        agg_by_dialog = {}
+        agg_by_syfte = {}
+        agg_by_produkt = {}
+        
+        # Process by age group
+        for age_group in all_age_groups:
+            age_data = merged_data[merged_data['AgeGroup'] == age_group]
+            
+            if len(age_data) == 0:
+                # Add a row with zeros if no data for this age group
+                results.append({
+                    'AgeGroup': age_group,
+                    'OpenRate': 0,
+                    'ClickRate': 0,
+                    'OptoutRate': 0,
+                    'Count': 0
+                })
+            else:
+                # Calculate overall metrics
+                total_sendouts = age_data['Sendouts'].sum()
+                total_opens = age_data['Opens'].sum()
+                total_clicks = age_data['Clicks'].sum()
+                total_optouts = age_data['Optouts'].sum()
+                
+                openrate = total_opens / total_sendouts if total_sendouts > 0 else 0
+                clickrate = total_clicks / total_sendouts if total_sendouts > 0 else 0
+                optoutrate = total_optouts / total_sendouts if total_sendouts > 0 else 0
+                
+                results.append({
+                    'AgeGroup': age_group,
+                    'OpenRate': openrate,
+                    'ClickRate': clickrate,
+                    'OptoutRate': optoutrate,
+                    'Count': len(age_data)
+                })
+                
+                # Aggregate by Dialog
+                for dialog in age_data['Dialog'].unique():
+                    dialog_data = age_data[age_data['Dialog'] == dialog]
+                    dialog_sendouts = dialog_data['Sendouts'].sum()
+                    if dialog_sendouts > 0:
+                        dialog_opens = dialog_data['Opens'].sum()
+                        dialog_clicks = dialog_data['Clicks'].sum()
+                        dialog_optouts = dialog_data['Optouts'].sum()
+                        
+                        if dialog not in agg_by_dialog:
+                            agg_by_dialog[dialog] = {}
+                        
+                        agg_by_dialog[dialog][age_group] = {
+                            'OpenRate': dialog_opens / dialog_sendouts if dialog_sendouts > 0 else 0,
+                            'ClickRate': dialog_clicks / dialog_sendouts if dialog_sendouts > 0 else 0,
+                            'OptoutRate': dialog_optouts / dialog_sendouts if dialog_sendouts > 0 else 0,
+                            'Count': len(dialog_data)
+                        }
+                
+                # Aggregate by Syfte
+                for syfte in age_data['Syfte'].unique():
+                    syfte_data = age_data[age_data['Syfte'] == syfte]
+                    syfte_sendouts = syfte_data['Sendouts'].sum()
+                    if syfte_sendouts > 0:
+                        syfte_opens = syfte_data['Opens'].sum()
+                        syfte_clicks = syfte_data['Clicks'].sum()
+                        syfte_optouts = syfte_data['Optouts'].sum()
+                        
+                        if syfte not in agg_by_syfte:
+                            agg_by_syfte[syfte] = {}
+                        
+                        agg_by_syfte[syfte][age_group] = {
+                            'OpenRate': syfte_opens / syfte_sendouts if syfte_sendouts > 0 else 0,
+                            'ClickRate': syfte_clicks / syfte_sendouts if syfte_sendouts > 0 else 0,
+                            'OptoutRate': syfte_optouts / syfte_sendouts if syfte_sendouts > 0 else 0,
+                            'Count': len(syfte_data)
+                        }
+                
+                # Aggregate by Produkt
+                for produkt in age_data['Produkt'].unique():
+                    produkt_data = age_data[age_data['Produkt'] == produkt]
+                    produkt_sendouts = produkt_data['Sendouts'].sum()
+                    if produkt_sendouts > 0:
+                        produkt_opens = produkt_data['Opens'].sum()
+                        produkt_clicks = produkt_data['Clicks'].sum()
+                        produkt_optouts = produkt_data['Optouts'].sum()
+                        
+                        if produkt not in agg_by_produkt:
+                            agg_by_produkt[produkt] = {}
+                        
+                        agg_by_produkt[produkt][age_group] = {
+                            'OpenRate': produkt_opens / produkt_sendouts if produkt_sendouts > 0 else 0,
+                            'ClickRate': produkt_clicks / produkt_sendouts if produkt_sendouts > 0 else 0,
+                            'OptoutRate': produkt_optouts / produkt_sendouts if produkt_sendouts > 0 else 0,
+                            'Count': len(produkt_data)
+                        }
+        
+        # Convert results to DataFrame
+        results_df = pd.DataFrame(results)
+        
+        # Create a DataFrame for each metric
+        metrics = ['OpenRate', 'ClickRate', 'OptoutRate']
+        heatmap_data = {metric: pd.DataFrame(index=all_age_groups) for metric in metrics}
+        
+        # Add overall data
+        for metric in metrics:
+            heatmap_data[metric]['Overall'] = results_df.set_index('AgeGroup')[metric]
+        
+        # Add dialog, syfte, and produkt data
+        for dialog, data in agg_by_dialog.items():
+            for metric in metrics:
+                dialog_values = [data.get(age_group, {}).get(metric, 0) for age_group in all_age_groups]
+                display_dialog = next((label for code, label in DIALOG_VALUES.items() if code[0] == dialog), dialog)
+                heatmap_data[metric][f"Dialog: {display_dialog}"] = dialog_values
+        
+        for syfte, data in agg_by_syfte.items():
+            for metric in metrics:
+                syfte_values = [data.get(age_group, {}).get(metric, 0) for age_group in all_age_groups]
+                display_syfte = next((label for code, label in SYFTE_VALUES.items() if code[0] == syfte), syfte)
+                heatmap_data[metric][f"Syfte: {display_syfte}"] = syfte_values
+        
+        for produkt, data in agg_by_produkt.items():
+            for metric in metrics:
+                produkt_values = [data.get(age_group, {}).get(metric, 0) for age_group in all_age_groups]
+                display_produkt = next((label for code, label in PRODUKT_VALUES.items() if code[0] == produkt), produkt)
+                heatmap_data[metric][f"Produkt: {display_produkt}"] = produkt_values
+        
+        return heatmap_data, results_df
+    except Exception as e:
+        st.error(f"Error processing data for age heatmap: {str(e)}")
+        return None, None
+
+def prepare_version_heatmap_data(all_options, heatmap_data, metric):
+    """
+    Prepare data for version comparison heatmap with proportional estimates for different versions
+    """
+    # Get base data and age groups
+    base_data = heatmap_data[metric].copy()
+    age_groups = base_data.index
+    
+    # Create new DataFrame with just age groups
+    version_data = pd.DataFrame(index=age_groups)
+    
+    # Get the baseline data and baseline overall rate
+    baseline_values = base_data['Overall'].values
+    
+    # For OpenRate: use the predicted values from the model
+    if metric == 'OpenRate':
+        # Find the baseline (version A) open rate
+        baseline_overall = next(rate for ver, _, _, rate in all_options if ver == 'A')
+        
+        for version, _, _, predicted_rate in all_options:
+            # Calculate ratio between this version's predicted rate and baseline
+            if baseline_overall > 0:
+                adjustment_ratio = predicted_rate / baseline_overall
+            else:
+                adjustment_ratio = 1.0
+                
+            # Apply ratio to adjust each age group's rate
+            # Use numpy's clip to ensure values stay in reasonable range (0-100%)
+            adjusted_values = np.clip(baseline_values * adjustment_ratio, 0, 1)
+            
+            # Add to dataframe
+            version_data[f"Version {version}"] = adjusted_values
+    
+    # For ClickRate and OptoutRate: simulate effect based on open rate change
+    else:
+        # Find baseline values
+        baseline_overall = next(rate for ver, _, _, rate in all_options if ver == 'A')
+        
+        for version, _, _, predicted_rate in all_options:
+            # Calculate modification based on open rate change (simplified model)
+            if baseline_overall > 0:
+                ratio = predicted_rate / baseline_overall
+                
+                if metric == 'ClickRate':
+                    # Click rate increases with open rate but with diminishing returns
+                    adjustment_ratio = 1.0 + (ratio - 1.0) * 0.7
+                else:  # OptoutRate
+                    # Optout rate slightly decreases as open rate increases (inverse relationship)
+                    adjustment_ratio = 1.0 - (ratio - 1.0) * 0.3
+            else:
+                adjustment_ratio = 1.0
+                
+            # Apply adjustment
+            adjusted_values = np.clip(baseline_values * adjustment_ratio, 0, 1)
+            
+            # Add to dataframe
+            version_data[f"Version {version}"] = adjusted_values
+    
+    return version_data
+
+def create_interactive_heatmap(data, metric, title, is_percentage=True, colorscale='Viridis'):
+    """
+    Create an interactive heatmap using Plotly
+    """
+    # Format data for heatmap
+    z = data.values
+    x = data.columns
+    y = data.index
+    
+    # Format values for hover text
+    if is_percentage:
+        hover_text = [[f"{z[i][j]:.2%}" for j in range(len(x))] for i in range(len(y))]
+    else:
+        hover_text = [[f"{z[i][j]:.4f}" for j in range(len(x))] for i in range(len(y))]
+    
+    # Create heatmap
+    fig = go.Figure(data=go.Heatmap(
+        z=z,
+        x=x,
+        y=y,
+        hoverongaps=False,
+        text=hover_text,
+        hoverinfo='text+x+y',
+        colorscale=colorscale
+    ))
+    
+    # Update layout
+    fig.update_layout(
+        title=title,
+        xaxis_title='Category',
+        yaxis_title='Age Group',
+        xaxis=dict(
+            tickangle=-45,
+            side='bottom',
+            tickfont=dict(size=10)
+        ),
+        yaxis=dict(
+            autorange='reversed',  # Important to make age groups go from youngest to oldest
+            tickfont=dict(size=10)
+        ),
+        height=400,
+        margin=dict(l=50, r=50, t=80, b=100)
+    )
+    
+    return fig
+
+def send_to_groq_api(subject_line, preheader, openrate_A, selected_dialog, selected_syfte, selected_product, min_age, max_age, included_bolag):
+    """
+    Send data to Groq API for subject line and preheader suggestions
+    """
+    try:
+        if not GROQ_API_KEY:
+            return {"error": "Groq API key not found. Please set GROQ_API_KEY in .env file."}
+        
+        prompt = f"""
+        I need to create email subject lines and preheaders for a marketing campaign. 
+        
+        Current subject line: "{subject_line}"
+        Current preheader: "{preheader}"
+        Predicted open rate: {openrate_A:.2%}
+        
+        Campaign details:
+        - Dialog: {selected_dialog}
+        - Syfte (Purpose): {selected_syfte}
+        - Product: {selected_product}
+        - Age range: {min_age} to {max_age}
+        - Target regions: {', '.join(included_bolag)}
+        
+        Please generate THREE alternative email subject lines and preheaders in Swedish that could improve the open rate.
+        Return your response as a JSON object with a 'suggestions' field containing an array of objects, each with 'subject' and 'preheader' fields, like this:
+        {{
+            "suggestions": [
+                {{"subject": "First alternative subject line", "preheader": "First alternative preheader"}},
+                {{"subject": "Second alternative subject line", "preheader": "Second alternative preheader"}},
+                {{"subject": "Third alternative subject line", "preheader": "Third alternative preheader"}}
+            ]
+        }}
+        """
+        
+        response = requests.post(
+            'https://api.groq.com/openai/v1/chat/completions',
+            headers={
+                'Authorization': f'Bearer {GROQ_API_KEY}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                "model": "llama3-70b-8192",
+                "messages": [
+                    {"role": "system", "content": "You are an expert in email marketing optimization. Your task is to generate compelling email subject lines and preheaders in Swedish that maximize open rates."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "response_format": {"type": "json_object"}
+            },
+            timeout=30  # Add timeout
+        )
+        
+        response.raise_for_status()  # Raise exception for HTTP errors
+        
+        response_data = response.json()
+        content = response_data.get('choices', [{}])[0].get('message', {}).get('content', '{}')
+        
+        try:
+            suggestions_data = json.loads(content)
+            return suggestions_data
+        except json.JSONDecodeError:
+            st.error(f"Failed to parse JSON response: {content}")
+            return {"error": "Failed to parse API response", "raw_content": content}
+    
+    except requests.RequestException as e:
+        st.error(f"API request error: {str(e)}")
+        return {"error": f"API request error: {str(e)}"}
+    except Exception as e:
+        st.error(f"Error sending to Groq API: {str(e)}")
+        return {"error": f"An unexpected error occurred: {str(e)}"}
+
 def main():
     st.title("Email Campaign Performance Predictor")
+    
+    # Define age groups for consistent use throughout the app
+    AGE_GROUPS = ['18-24', '25-29', '30-39', '40-49', '50-59', '60-69', '70-79', '80-89', '90-100']
+    # For backward compatibility
+    AGE_BINS = [0, 25, 35, 45, 55, 65, 100]
+    AGE_LABELS = ['0-25', '26-35', '36-45', '46-55', '56-65', '65+']
     
     # Sidebar navigation
     st.sidebar.title("Navigation")
@@ -332,6 +777,10 @@ def main():
     
     # Preprocess data
     df = preprocess_data(delivery_df, customer_df)
+    
+    # Add age bins if not already present
+    if df is not None and 'AgeBin' not in df.columns and 'AverageAge' in df.columns:
+        df['AgeBin'] = pd.cut(df['AverageAge'], bins=AGE_BINS, labels=AGE_LABELS)
     
     if df is None:
         st.error("Error preprocessing data.")
@@ -463,9 +912,8 @@ def main():
             metric = st.selectbox("Select Metric", ["OpenRate", "ClickRate", "OptoutRate"])
             
             if demo_option == "AverageAge":
-                # Create age bins
-                df['AgeBin'] = pd.cut(df['AverageAge'], bins=[0, 25, 35, 45, 55, 65, 100], 
-                                     labels=['0-25', '26-35', '36-45', '46-55', '56-65', '65+'])
+                # Create age bins using the predefined bins
+                df['AgeBin'] = pd.cut(df['AverageAge'], bins=AGE_BINS, labels=AGE_LABELS)
                 
                 # Aggregate data
                 agg_data = df.groupby('AgeBin')[metric].mean().reset_index()
@@ -558,10 +1006,31 @@ def main():
     elif page == "Model Training":
         st.header("Model Training")
         
-        # Select target variable
-        target = st.selectbox("Select Prediction Target", ["OpenRate", "ClickRate", "OptoutRate"])
+        # Advanced model training options
+        with st.expander("Advanced Training Options", expanded=True):
+            # Option to train models for all KPIs together
+            train_all = st.checkbox("Train models for all KPIs (Open, Click, and Opt-out rates)", value=True)
+            use_sample_weights = st.checkbox("Use sample weights for training", value=True)
+            
+            if use_sample_weights:
+                st.info("Sample weights will prioritize examples with higher rates during training.")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    weight_threshold = st.slider("Weight threshold", 0.0, 1.0, 0.5, 0.05,
+                                               help="Samples above this threshold get higher weight")
+                with col2:
+                    weight_ratio = st.slider("Weight ratio", 1.0, 5.0, 2.0, 0.1,
+                                           help="Ratio of weights for high vs low samples")
         
-        # Prepare features and target
+        if not train_all:
+            # Select a single target variable
+            target = st.selectbox("Select Prediction Target", ["OpenRate", "ClickRate", "OptoutRate"])
+            targets = [target]
+        else:
+            targets = ["OpenRate", "ClickRate", "OptoutRate"]
+        
+        # Prepare features
         features_df = prepare_features(df, text_vectorizers)
         
         if features_df is None:
@@ -572,14 +1041,34 @@ def main():
         model_type = st.selectbox("Select Model Type", 
                                  ["gradient_boosting", "random_forest", "ridge"])
         
-        # Train model button
-        if st.button("Train Model"):
-            with st.spinner("Training model..."):
-                model, metrics, X_test, y_test, test_preds = train_model(
-                    features_df, df[target], model_type=model_type
-                )
-                
-                if model:
+        # Train models button
+        if st.button("Train Models"):
+            # Create progress bar
+            progress_bar = st.progress(0)
+            
+            # Train models for each target
+            for i, target in enumerate(targets):
+                with st.spinner(f"Training model for {target}..."):
+                    # Create sample weights if requested
+                    if use_sample_weights:
+                        # Create weights that prioritize higher values
+                        sample_weights = pd.Series(
+                            np.where(df[target] > weight_threshold, weight_ratio, 1.0),
+                            index=df.index
+                        )
+                    else:
+                        sample_weights = None
+                    
+                    # Train model
+                    model, metrics, X_test, y_test, test_preds = train_model(
+                        features_df, df[target], model_type=model_type, sample_weight=sample_weights
+                    )
+                    
+                    # Cross-validation for more robust evaluation
+                    cv_results = cross_validate_model(
+                        features_df, df[target], model_type=model_type, sample_weight=sample_weights
+                    )
+                    
                     # Save model
                     model_filename = f"{target.lower()}_{model_type}_model.pkl"
                     vectorizers_filename = "text_vectorizers.pkl"
@@ -588,8 +1077,16 @@ def main():
                         st.success(f"Model trained and saved as {model_filename}")
                     
                     # Display metrics
-                    st.subheader("Model Performance Metrics")
+                    st.subheader(f"{target} Model Performance Metrics")
                     
+                    # First display cross-validation results
+                    st.write("Cross-Validation Results (5-fold):")
+                    cv_col1, cv_col2, cv_col3 = st.columns(3)
+                    cv_col1.metric("Mean R² Score", f"{cv_results['r2']['mean']:.4f} ± {cv_results['r2']['std']:.4f}")
+                    cv_col2.metric("Mean RMSE", f"{cv_results['rmse']['mean']:.6f} ± {cv_results['rmse']['std']:.6f}")
+                    cv_col3.metric("Mean MAE", f"{cv_results['mae']['mean']:.6f} ± {cv_results['mae']['std']:.6f}")
+                    
+                    # Then display train/test metrics
                     col1, col2 = st.columns(2)
                     
                     with col1:
@@ -631,30 +1128,46 @@ def main():
                         plt.barh(range(len(indices)), importance[indices], align='center')
                         plt.yticks(range(len(indices)), [feature_names[i] for i in indices])
                         plt.xlabel('Feature Importance')
-                        plt.title('Top 15 Most Important Features')
+                        plt.title(f'Top 15 Most Important Features for {target}')
                         plt.tight_layout()
                         st.pyplot(fig)
+                
+                # Update progress
+                progress_bar.progress((i + 1) / len(targets))
+            
+            # Final success message
+            st.success(f"Successfully trained {len(targets)} models!")
     
     # Prediction page
     elif page == "Prediction":
         st.header("Predict Campaign Performance")
         
         # Check if models exist
-        model_files = ['openrate_gradient_boosting_model.pkl', 
-                      'clickrate_gradient_boosting_model.pkl', 
-                      'optoutrate_gradient_boosting_model.pkl',
-                      'text_vectorizers.pkl']
+        # First try to determine which model type to use
+        model_types = ['gradient_boosting', 'random_forest', 'ridge']
+        found_model_type = None
         
-        models_exist = all(os.path.exists(f'models/{f}') for f in model_files)
+        for model_type in model_types:
+            model_files = [
+                f'openrate_{model_type}_model.pkl', 
+                f'clickrate_{model_type}_model.pkl', 
+                f'optoutrate_{model_type}_model.pkl',
+                'text_vectorizers.pkl'
+            ]
+            
+            if all(os.path.exists(f'models/{f}') for f in model_files):
+                found_model_type = model_type
+                break
         
-        if not models_exist:
+        if not found_model_type:
             st.warning("Models not found. Please train models on the 'Model Training' page first.")
             return
         
         # Load models
-        open_model = load_model('openrate_gradient_boosting_model.pkl')
-        click_model = load_model('clickrate_gradient_boosting_model.pkl')
-        optout_model = load_model('optoutrate_gradient_boosting_model.pkl')
+        st.info(f"Using {found_model_type} models")
+        open_model = load_model(f'openrate_{found_model_type}_model.pkl')
+        click_model = load_model(f'clickrate_{found_model_type}_model.pkl')
+        optout_model = load_model(f'optoutrate_{found_model_type}_model.pkl')
         text_vectorizers = load_model('text_vectorizers.pkl')
         
         if not all([open_model, click_model, optout_model, text_vectorizers]):
@@ -708,12 +1221,16 @@ def main():
             
             # Customer demographics
             col1, col2, col3 = st.columns(3)
+            st.write("Customer Demographics:")
             
             with col1:
                 gender = st.selectbox("Most Common Gender", ["Male", "Female", "Unknown"])
             
             with col2:
-                age = st.number_input("Average Age", min_value=18, max_value=100, value=45)
+                age_range = st.selectbox("Age Range", ['0-25', '26-35', '36-45', '46-55', '56-65', '65+'])
+                # Map the age range to a representative value for the model
+                age_map = {'0-25': 22, '26-35': 30, '36-45': 40, '46-55': 50, '56-65': 60, '65+': 70}
+                age = age_map[age_range]
             
             with col3:
                 bolag = st.selectbox("Most Common Bolag", list(BOLAG_VALUES.keys()))
@@ -721,6 +1238,15 @@ def main():
             # Number of unique customers
             unique_customers = st.number_input("Unique Customers", min_value=1, value=5000)
             
+            # Subject line and Preheader input with GenAI checkbox
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                subject = st.text_input('Subject Line')
+                preheader = st.text_input('Preheader')
+            with col2:
+                use_genai = st.checkbox('Use GenAI for A/B/C/D Test', value=True, 
+                                      help="Use Groq API to generate alternative subject lines and preheaders")
+                
             # Submit button
             submitted = st.form_submit_button("Predict Performance")
         
@@ -738,6 +1264,7 @@ def main():
                 'Hour': [hour],
                 'MostCommonGender': [gender],
                 'AverageAge': [age],
+                'AgeBin': [age_range],  # Add the age range
                 'MostCommonBolag': [bolag],
                 'UniqueCustomers': [unique_customers],
                 'SubjectLength': [len(subject)],
@@ -789,6 +1316,210 @@ def main():
             st.write(f"Expected Opens: {expected_opens}")
             st.write(f"Expected Clicks: {expected_clicks}")
             st.write(f"Expected Opt-outs: {expected_optouts}")
+            
+            # Age group analysis
+            try:
+                with st.expander("Age Group Analysis", expanded=False):
+                    # Process data for heatmap
+                    heatmap_data, _ = process_data_for_age_heatmap(df, customer_df)
+                    
+                    # Create tabs for different metrics
+                    metric_tabs = st.tabs(["Open Rate", "Click Rate", "Opt-out Rate"])
+                    
+                    with metric_tabs[0]:
+                        open_data = heatmap_data['OpenRate'][['Overall']]
+                        fig = create_interactive_heatmap(open_data, 'OpenRate', 'Open Rate by Age Group')
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with metric_tabs[1]:
+                        click_data = heatmap_data['ClickRate'][['Overall']]
+                        fig = create_interactive_heatmap(click_data, 'ClickRate', 'Click Rate by Age Group')
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with metric_tabs[2]:
+                        optout_data = heatmap_data['OptoutRate'][['Overall']]
+                        fig = create_interactive_heatmap(optout_data, 'OptoutRate', 'Opt-out Rate by Age Group')
+                        st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Error in age group analysis: {str(e)}")
+            
+            # A/B/C/D Testing with Groq API
+            if use_genai:
+                st.subheader("A/B/C/D Testing")
+                
+                if st.button('Generate Alternative Subject Lines and Preheaders'):
+                    with st.spinner("Generating alternatives with Groq API..."):
+                        # Send request to Groq API
+                        response_data = send_to_groq_api(
+                            subject, preheader, 
+                            open_rate_pred, 
+                            dialog, syfte, produkt,
+                            min_age, max_age, 
+                            included_bolag
+                        )
+                        
+                        if "error" in response_data:
+                            st.error(response_data["error"])
+                            if "raw_content" in response_data:
+                                with st.expander("Raw API Response"):
+                                    st.code(response_data["raw_content"])
+                        else:
+                            try:
+                                suggestions = response_data.get('suggestions', [])
+                                
+                                options = []
+                                for i, sug in enumerate(suggestions[:3], start=1):
+                                    alt_subject = sug.get('subject', '')
+                                    alt_preheader = sug.get('preheader', '')
+                                    
+                                    if alt_subject:
+                                        # Create prediction data for this alternative
+                                        alt_pred_data = pred_data.copy()
+                                        alt_pred_data['Subject'] = alt_subject
+                                        alt_pred_data['SubjectLength'] = len(alt_subject)
+                                        
+                                        if alt_preheader:
+                                            alt_pred_data['Preheader'] = alt_preheader
+                                            alt_pred_data['PreheaderLength'] = len(alt_preheader)
+                                        
+                                        # Prepare features and predict
+                                        alt_pred_features = prepare_features(alt_pred_data, text_vectorizers)
+                                        alt_open_rate = open_model.predict(alt_pred_features)[0]
+                                        alt_click_rate = click_model.predict(alt_pred_features)[0]
+                                        alt_optout_rate = optout_model.predict(alt_pred_features)[0]
+                                        
+                                        options.append((
+                                            chr(65 + i),  # A, B, C, D
+                                            alt_subject, 
+                                            alt_preheader, 
+                                            alt_open_rate,
+                                            alt_click_rate, 
+                                            alt_optout_rate
+                                        ))
+                                
+                                # Add current option as Version A
+                                all_options = [
+                                    ('A', subject, preheader, open_rate_pred, click_rate_pred, optout_rate_pred)
+                                ] + options
+                                
+                                # Display all versions in a comparison table
+                                st.subheader("A/B/C/D Test Results")
+                                
+                                # Create an expander for each version
+                                for opt, subj, preh, open_rate, click_rate, optout_rate in all_options:
+                                    with st.expander(f"Version {opt}", expanded=True):
+                                        is_current = opt == 'A'
+                                        is_best_open = open_rate == max(o[3] for o in all_options)
+                                        
+                                        # Add badges
+                                        badges = []
+                                        if is_current:
+                                            badges.append("🔹 Current")
+                                        if is_best_open:
+                                            badges.append("⭐ Best Open Rate")
+                                        
+                                        if badges:
+                                            st.markdown(f"<div style='margin-bottom:10px'>{' | '.join(badges)}</div>", unsafe_allow_html=True)
+                                        
+                                        # Display subject and preheader
+                                        st.markdown("**Subject:**")
+                                        st.markdown(f"<div style='background-color:#f0f2f6;padding:10px;border-radius:5px;margin-bottom:10px'>{subj}</div>", unsafe_allow_html=True)
+                                        
+                                        st.markdown("**Preheader:**")
+                                        st.markdown(f"<div style='background-color:#f0f2f6;padding:10px;border-radius:5px;margin-bottom:10px'>{preh}</div>", unsafe_allow_html=True)
+                                        
+                                        # Display metrics
+                                        st.markdown("**Predicted Results:**")
+                                        cols = st.columns(3)
+                                        
+                                        # Calculate differences from baseline (Version A)
+                                        base_open = all_options[0][3]
+                                        base_click = all_options[0][4]
+                                        base_optout = all_options[0][5]
+                                        
+                                        delta_open = None if opt == 'A' else (open_rate - base_open) * 100
+                                        delta_click = None if opt == 'A' else (click_rate - base_click) * 100
+                                        delta_optout = None if opt == 'A' else (optout_rate - base_optout) * 100
+                                        
+                                        cols[0].metric("Open Rate", f"{open_rate * 100:.2f}%", 
+                                                      f"{delta_open:+.2f}%" if delta_open is not None else None)
+                                        
+                                        cols[1].metric("Click Rate", f"{click_rate * 100:.2f}%", 
+                                                      f"{delta_click:+.2f}%" if delta_click is not None else None)
+                                        
+                                        cols[2].metric("Opt-out Rate", f"{optout_rate * 100:.2f}%", 
+                                                      f"{delta_optout:+.2f}%" if delta_optout is not None else None)
+                                
+                                # Version comparison heatmaps
+                                st.subheader("Age Group Analysis Across Versions")
+                                try:
+                                    # Create tabs for different metrics
+                                    metric_tabs = st.tabs(["Open Rate", "Click Rate", "Opt-out Rate"])
+                                    
+                                    with metric_tabs[0]:
+                                        # Prepare data with all versions
+                                        version_open_data = prepare_version_heatmap_data(
+                                            [(v[0], v[1], v[2], v[3]) for v in all_options], 
+                                            heatmap_data, 'OpenRate'
+                                        )
+                                        
+                                        # Calculate best version for each age group
+                                        best_version_by_age = version_open_data.idxmax(axis=1)
+                                        
+                                        # Display heatmap
+                                        fig = create_interactive_heatmap(version_open_data, 'OpenRate', 
+                                                                      'Open Rate by Age Group and Version',
+                                                                      colorscale='Viridis')
+                                        st.plotly_chart(fig, use_container_width=True)
+                                        
+                                        # Show which version is best for each age group
+                                        st.subheader("Best Version by Age Group (Open Rate)")
+                                        best_df = pd.DataFrame({
+                                            'Age Group': best_version_by_age.index,
+                                            'Best Version': best_version_by_age.values,
+                                            'Estimated Open Rate': [version_open_data.loc[age, ver] for age, ver in 
+                                                               zip(best_version_by_age.index, best_version_by_age.values)]
+                                        })
+                                        st.dataframe(best_df.set_index('Age Group'), use_container_width=True)
+                                    
+                                    with metric_tabs[1]:
+                                        version_click_data = prepare_version_heatmap_data(
+                                            [(v[0], v[1], v[2], v[3]) for v in all_options], 
+                                            heatmap_data, 'ClickRate'
+                                        )
+                                        fig = create_interactive_heatmap(version_click_data, 'ClickRate', 
+                                                                      'Click Rate by Age Group and Version',
+                                                                      colorscale='Blues')
+                                        st.plotly_chart(fig, use_container_width=True)
+                                    
+                                    with metric_tabs[2]:
+                                        version_optout_data = prepare_version_heatmap_data(
+                                            [(v[0], v[1], v[2], v[3]) for v in all_options], 
+                                            heatmap_data, 'OptoutRate'
+                                        )
+                                        fig = create_interactive_heatmap(version_optout_data, 'OptoutRate', 
+                                                                      'Opt-out Rate by Age Group and Version',
+                                                                      colorscale='Reds')
+                                        st.plotly_chart(fig, use_container_width=True)
+                                    
+                                    st.caption("""Note: These heatmaps show estimated performance by age group for each version.
+                                    The estimates are based on the overall predicted open rate and how it might affect different age groups proportionally.""")
+                                except Exception as e:
+                                    st.error(f"Error displaying age group heatmaps: {str(e)}")
+                                
+                                # Find the best option
+                                best_option = max(all_options, key=lambda x: x[3])
+                                
+                                # Summary section
+                                st.subheader("Summary")
+                                st.write(f"Best performing version: **Version {best_option[0]}** with {best_option[3] * 100:.2f}% predicted open rate")
+                                
+                                if best_option[0] != 'A':
+                                    improvement = best_option[3] - open_rate_pred
+                                    st.write(f"Improvement over current version: **{improvement * 100:.2f}%**")
+                                    st.write(f"Expected additional opens: **{int(improvement * unique_customers)}**")
+                            except Exception as e:
+                                st.error(f"Error processing alternatives: {str(e)}")
             
             # Provide suggestions for improvement
             st.subheader("Suggestions for Improvement")
