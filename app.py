@@ -1202,8 +1202,13 @@ def main():
                             else:
                                 st.error("Failed to generate alternatives. Please check your Groq API key.")
         
-        # Tab 2: Batch Processing
+                
+        # Tab 2: KPI Dashboard
         with tab2:
+            create_kpi_dashboard(df)
+            
+        # Tab 3: Batch Processing
+        with tab3:
             st.header("Batch KPI Prediction")
             
             # Create tabs for different input methods
@@ -1404,10 +1409,6 @@ def main():
                                 # Display results
                                 st.subheader("Batch Prediction Results")
                                 display_batch_results(batch_results)
-        
-        # Tab 3: KPI Dashboard
-        with tab3:
-            create_kpi_dashboard(df)
         
         # Tab 4: Model Insights
         with tab4:

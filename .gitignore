@@ -182,3 +182,5 @@ Grok/models/xgboost_model_v2.0.0_metadata.yaml
 Grok/xgboost_model.pkl
 required columns for KPI predictor.txt
 extract from SQL.txt
+/App/models
+*.csv
